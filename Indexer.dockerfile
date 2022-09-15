@@ -6,7 +6,10 @@ COPY . ./quickwit
 
 WORKDIR /quickwit
 
-RUN echo "Building workspace with feature(s) '$CARGO_FEATURES' and profile '$CARGO_PROFILE'" \
+RUN --mount=type=cache,target=/root/.cargo/registry \
+        --mount=type=cache,target=/root/.cargo/git \
+        --mount=type=cache,target=/home/root/src/target \
+    echo "Building workspace with feature(s) '$CARGO_FEATURES' and profile '$CARGO_PROFILE'" \
     && cargo +stable build \
          -r --features $CARGO_FEATURES \
     && mkdir -p /quickwit/bin \
