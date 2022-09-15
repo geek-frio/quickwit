@@ -2,6 +2,8 @@ FROM reg.qa.91jkys.com/lang/rust-ci:latest as builder
 
 ARG CARGO_FEATURES=release-feature-set
 
+RUN apt-get -y install cmake
+
 COPY . ./quickwit
 
 WORKDIR /quickwit
