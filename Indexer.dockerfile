@@ -6,7 +6,7 @@ RUN sed -i s@/archive.ubuntu.com/@/mirrors.aliyun.com/@g /etc/apt/sources.list &
     sed -i s@/security.ubuntu.com/@/mirrors.aliyun.com/@g /etc/apt/sources.list
 
 RUN  apt-get -y update && \
-     apt-get -y install cmake
+     apt-get -y install cmake clang
 
 COPY . ./quickwit
 
