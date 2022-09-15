@@ -7,7 +7,7 @@ COPY . ./quickwit
 WORKDIR /quickwit
 
 RUN echo "Building workspace with feature(s) '$CARGO_FEATURES' and profile '$CARGO_PROFILE'" \
-    && cargo build \
+    && cargo +stable build \
          -r --features $CARGO_FEATURES \
     && mkdir -p /quickwit/bin \
     && find target/$CARGO_PROFILE -maxdepth 1 -perm /a+x -type f -exec mv {} /quickwit/bin \;
