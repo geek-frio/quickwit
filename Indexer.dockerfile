@@ -13,7 +13,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     && cargo +stable build \
          -r --features $CARGO_FEATURES \
     && mkdir -p /quickwit/bin \
-    && find target/$CARGO_PROFILE -maxdepth 1 -perm /a+x -type f -exec mv {} /quickwit/bin \;
+    && mv target/release/quickwit  /quickwit/bin/quickwit
 
 FROM reg.qa.91jkys.com/appenv/configer:v0.1 AS quickwit
 
@@ -22,7 +22,6 @@ RUN apt-get -y update \
                           libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /quickwit
 COPY --from=builder /quickwit/bin/quickwit /usr/local/bin/quickwit
 
 CMD ["/usr/local/bin/quickwit --version"]
