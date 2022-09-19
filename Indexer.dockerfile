@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     && mkdir -p /quickwit/bin \
     && find target/$CARGO_PROFILE -maxdepth 1 -perm /a+x -type f -exec mv {} /quickwit/bin \;
 
-FROM ubuntu:22.04 AS quickwit
+FROM reg.qa.91jkys.com/appenv/configer:v0.1 AS quickwit
 
 RUN apt-get -y update \
     && apt-get -y install libpq-dev \
