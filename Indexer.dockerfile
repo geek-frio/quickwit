@@ -18,7 +18,8 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 FROM reg.qa.91jkys.com/appenv/configer:v0.1 AS quickwit
 
 RUN apt-get -y update \
-    && apt-get -y install libpq-dev \
+    && apt-get -y install ca-certificates \
+                          libpq-dev \
                           libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
