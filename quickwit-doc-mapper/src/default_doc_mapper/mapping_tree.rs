@@ -22,7 +22,6 @@ use std::collections::BTreeMap;
 
 use anyhow::bail;
 use itertools::Itertools;
-use regex::bytes;
 use serde_json::Value as JsonValue;
 use tantivy::schema::{
     BytesOptions, Cardinality, Field, JsonObjectOptions, NumericOptions, SchemaBuilder,
