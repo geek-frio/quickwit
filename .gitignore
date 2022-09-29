@@ -17,3 +17,5 @@
 .cargo
 deps
 qwdata
+test-data
+quickwit-v0.3.1

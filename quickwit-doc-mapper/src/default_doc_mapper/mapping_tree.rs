@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 use anyhow::bail;
 use itertools::Itertools;
+use regex::bytes;
 use serde_json::Value as JsonValue;
 use tantivy::schema::{
     BytesOptions, Cardinality, Field, JsonObjectOptions, NumericOptions, SchemaBuilder,
@@ -64,6 +65,13 @@ impl LeafType {
             LeafType::Bool(_) => JsonType::Bool,
             LeafType::Bytes(_) => JsonType::String,
             LeafType::Json(_) => JsonType::Object,
+        }
+    }
+
+    pub fn is_byts_field(&self) -> bool {
+        match self {
+            LeafType::Bytes(_) => true,
+            _ => false,
         }
     }
 
@@ -170,8 +178,13 @@ impl MappingLeaf {
         doc_json: &mut serde_json::Map<String, serde_json::Value>,
     ) {
         let json_type = self.typ.json_type();
-        if let Some(json_val) = extract_json_val(json_type, named_doc, field_path, self.cardinality)
-        {
+        if let Some(json_val) = extract_json_val(
+            &self.get_type(),
+            json_type,
+            named_doc,
+            field_path,
+            self.cardinality,
+        ) {
             insert_json_val(field_path, json_val, doc_json);
         }
     }
@@ -197,6 +210,7 @@ fn json_type_from_json_value(json_value: &JsonValue) -> JsonType {
 }
 
 fn extract_json_val(
+    leaf_type: &LeafType,
     json_type: JsonType,
     named_doc: &mut BTreeMap<String, Vec<JsonValue>>,
     field_path: &[&str],
@@ -204,6 +218,32 @@ fn extract_json_val(
 ) -> Option<JsonValue> {
     let full_path = field_path.join(".");
     let vals = named_doc.remove(&full_path)?;
+
+    if leaf_type.is_byts_field() && json_type == JsonType::String {
+        return vals
+            .into_iter()
+            .next()
+            .map(|v| {
+                if let serde_json::Value::Array(byts) = v {
+                    let byts = byts
+                        .into_iter()
+                        .filter_map(|v| {
+                            if let serde_json::Value::Number(n) = v {
+                                n.as_u64()
+                            } else {
+                                None
+                            }
+                        })
+                        .filter_map(|v| std::convert::TryFrom::<u64>::try_from(v).ok())
+                        .collect::<Vec<u8>>();
+                    Some(JsonValue::String(base64::encode(byts)))
+                } else {
+                    None
+                }
+            })
+            .flatten();
+    }
+
     let mut vals_with_correct_type_it = vals
         .into_iter()
         .filter(|json_val| json_type_from_json_value(json_val) == json_type);
