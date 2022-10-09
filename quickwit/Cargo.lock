@@ -3405,6 +3405,8 @@ dependencies = [
  "async-trait",
  "base64",
  "itertools",
+ "prost-types",
+ "quickwit-opentelemetry",
  "quickwit-proto",
  "quickwit-search",
  "serde_json",

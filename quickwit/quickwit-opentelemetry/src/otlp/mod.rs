@@ -21,4 +21,4 @@ mod logs;
 mod trace;
 
 pub use logs::OtlpGrpcLogsService;
-pub use trace::OtlpGrpcTraceService;
+pub use trace::{Event, OtlpGrpcTraceService, Span};

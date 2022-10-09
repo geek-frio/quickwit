@@ -15,8 +15,13 @@ doc_mapping:
       tokenizer: raw
     - name: trace_state
       type: text
-      indexed: true # TODO: set to false
-      stored: true
+      indexed: false
+    - name: resource_attributes
+      type: json
+      tokenizer: raw
+    - name: resource_dropped_attributes_count
+      type: u64
+      indexed: false
     - name: service_name
       type: text
       tokenizer: raw
@@ -24,23 +29,24 @@ doc_mapping:
       type: text
       tokenizer: raw
     - name: span_kind
-      type: json
+      type: text
       tokenizer: raw
     - name: span_name
       type: text
       tokenizer: raw
+    - name: span_start_timestamp_secs
+      type: i64
+      indexed: true
+      fast: true
     - name: span_start_timestamp_nanos
-      type: datetime
-      input_formats:
-        - unix_ts_nanos
-      fast: true
-      precision: seconds
+      type: i64
+      indexed: false
     - name: span_end_timestamp_nanos
-      type: datetime
-      input_formats:
-        - unix_ts_nanos
-      fast: true
-      precision: seconds
+      type: i64
+      indexed: false
+    - name: span_duration_secs
+      type: i64
+      indexed: false
     - name: span_attributes
       type: json
       tokenizer: raw
@@ -59,10 +65,13 @@ doc_mapping:
     - name: parent_span_id
       type: text
       tokenizer: raw
+    - name: events
+      type: array<json>
+      tokenizer: raw
 
 indexing_settings:
   commit_timeout_secs: 30
-  timestamp_field: span_start_timestamp_nanos
+  timestamp_field: span_start_timestamp_secs
 
 search_settings:
   default_search_fields: []
