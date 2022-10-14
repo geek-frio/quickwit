@@ -16,7 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
-
 use std::fmt::Debug;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -29,6 +28,10 @@ use tantivy::directory::error::OpenReadError;
 use tantivy::directory::FileHandle;
 use tantivy::{AsyncIoResult, Directory, HasLen};
 use tracing::{error, instrument};
+
+use once_cell::sync::OnceCell;
+use tokio::runtime::Builder;
+use tokio::runtime::Runtime;
 
 struct StorageDirectoryFileHandle {
     storage_directory: StorageDirectory,
@@ -53,8 +56,27 @@ impl fmt::Debug for StorageDirectoryFileHandle {
 
 #[async_trait]
 impl FileHandle for StorageDirectoryFileHandle {
-    fn read_bytes(&self, _byte_range: Range<usize>) -> io::Result<OwnedBytes> {
-        Err(unsupported_operation(&self.path))
+    fn read_bytes(&self, byte_range: Range<usize>) -> io::Result<OwnedBytes> {
+        if byte_range.is_empty() {
+            return Ok(OwnedBytes::empty());
+        }
+
+        use backtrace::Backtrace;
+        println!("Range is:{:?}", byte_range);
+        println!("Error backtrace: {:?}", Backtrace::new());
+
+        // 临时解决range查询问题，后续会优化掉上层调用走async调用的方式
+        static RUNTIME_CELL: OnceCell<Runtime> = OnceCell::new();
+        let runtime = RUNTIME_CELL.get_or_init(|| {
+            Builder::new_multi_thread().worker_threads(4).thread_name("read_bytes").build().unwrap()
+        });
+        let storage = self.storage_directory.clone();
+        let path = self.path.clone();
+        let res_bytes = runtime.block_on(async move{
+            storage.get_slice(&path, byte_range)
+            .await
+        });
+        res_bytes
     }
 
     #[instrument(level = "debug", fields(path = %self.path.to_string_lossy()), skip(self))]
@@ -82,7 +104,7 @@ impl FileHandle for StorageDirectoryFileHandle {
 /// everytime `read_bytes` is called.
 #[derive(Clone)]
 pub struct StorageDirectory {
-    storage: Arc<dyn Storage>,
+     storage: Arc<dyn Storage>,
 }
 
 impl Debug for StorageDirectory {

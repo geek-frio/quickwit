@@ -38,9 +38,9 @@ pub(crate) fn build_query(
         validate_sort_by_field_name(sort_by_field, &schema)?;
     }
 
-    if has_range_clause(&user_input_ast) {
-        return Err(anyhow::anyhow!("Range queries are not currently allowed.").into());
-    }
+//    if has_range_clause(&user_input_ast) {
+//        return Err(anyhow::anyhow!("Range queries are not currently allowed.").into());
+//    }
 
     if needs_default_search_field(&user_input_ast)
         && request.search_fields.is_empty()
