@@ -22,16 +22,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{fmt, io};
 
+use once_cell::sync::OnceCell;
+use tokio::runtime::{Builder, Runtime};
+
 use async_trait::async_trait;
 use quickwit_storage::{OwnedBytes, Storage};
 use tantivy::directory::error::OpenReadError;
 use tantivy::directory::FileHandle;
 use tantivy::{AsyncIoResult, Directory, HasLen};
-use tracing::{error, instrument};
-
-use once_cell::sync::OnceCell;
-use tokio::runtime::Builder;
-use tokio::runtime::Runtime;
+use tracing::{error, info, instrument};
 
 struct StorageDirectoryFileHandle {
     storage_directory: StorageDirectory,
@@ -61,21 +60,23 @@ impl FileHandle for StorageDirectoryFileHandle {
             return Ok(OwnedBytes::empty());
         }
 
-        use backtrace::Backtrace;
-        println!("Range is:{:?}", byte_range);
-        println!("Error backtrace: {:?}", Backtrace::new());
+        // Temp for qa test, code will be removed before deploy to production env
+        //        use backtrace::Backtrace;
+        info!("Range is:{:?}", byte_range);
+        //        info!("Error backtrace: {:?}", Backtrace::new());
 
         // 临时解决range查询问题，后续会优化掉上层调用走async调用的方式
         static RUNTIME_CELL: OnceCell<Runtime> = OnceCell::new();
         let runtime = RUNTIME_CELL.get_or_init(|| {
-            Builder::new_multi_thread().worker_threads(4).thread_name("read_bytes").build().unwrap()
+            Builder::new_multi_thread()
+                .worker_threads(4)
+                .thread_name("read_bytes")
+                .build()
+                .unwrap()
         });
         let storage = self.storage_directory.clone();
         let path = self.path.clone();
-        let res_bytes = runtime.block_on(async move{
-            storage.get_slice(&path, byte_range)
-            .await
-        });
+        let res_bytes = runtime.block_on(async move { storage.get_slice(&path, byte_range).await });
         res_bytes
     }
 
@@ -104,7 +105,7 @@ impl FileHandle for StorageDirectoryFileHandle {
 /// everytime `read_bytes` is called.
 #[derive(Clone)]
 pub struct StorageDirectory {
-     storage: Arc<dyn Storage>,
+    storage: Arc<dyn Storage>,
 }
 
 impl Debug for StorageDirectory {
