@@ -39,6 +39,7 @@ use crate::actors::index_serializer::IndexSerializer;
 use crate::actors::merge_split_downloader::MergeSplitDownloader;
 use crate::actors::publisher::PublisherType;
 use crate::actors::sequencer::Sequencer;
+use crate::actors::uploader::UploaderType;
 use crate::actors::{Indexer, MergeExecutor, MergePlanner, Packager, Publisher, Uploader};
 use crate::models::{IndexingDirectory, IndexingPipelineId, IndexingStatistics, Observe};
 use crate::source::{quickwit_supported_sources, SourceActor, SourceExecutionContext};
@@ -254,11 +255,11 @@ impl IndexingPipeline {
 
         // Merge uploader
         let merge_uploader = Uploader::new(
-            "MergeUploader",
+            UploaderType::MergeUploader,
             self.params.metastore.clone(),
             split_store.clone(),
             SplitsUpdateMailbox::Publisher(merge_publisher_mailbox),
-            self.params.max_concurrent_split_uploads,
+            self.params.max_concurrent_split_uploads_merge,
         );
         let (merge_uploader_mailbox, merge_uploader_handler) = ctx
             .spawn_actor()
@@ -330,11 +331,11 @@ impl IndexingPipeline {
 
         // Uploader
         let uploader = Uploader::new(
-            "Uploader",
+            UploaderType::IndexUploader,
             self.params.metastore.clone(),
             split_store.clone(),
             SplitsUpdateMailbox::Sequencer(sequencer_mailbox),
-            self.params.max_concurrent_split_uploads,
+            self.params.max_concurrent_split_uploads_index,
         );
         let (uploader_mailbox, uploader_handler) = ctx
             .spawn_actor()
@@ -565,7 +566,8 @@ pub struct IndexingPipelineParams {
     pub metastore: Arc<dyn Metastore>,
     pub storage: Arc<dyn Storage>,
     pub split_store: IndexingSplitStore,
-    pub max_concurrent_split_uploads: usize,
+    pub max_concurrent_split_uploads_index: usize,
+    pub max_concurrent_split_uploads_merge: usize,
 }
 
 impl IndexingPipelineParams {
@@ -585,6 +587,9 @@ impl IndexingPipelineParams {
             &index_metadata.search_settings,
             &index_metadata.indexing_settings,
         )?;
+        let max_concurrent_split_uploads_index = (max_concurrent_split_uploads / 2).max(1);
+        let max_concurrent_split_uploads_merge =
+            (max_concurrent_split_uploads - max_concurrent_split_uploads_index).max(1);
         Ok(Self {
             pipeline_id,
             doc_mapper,
@@ -594,7 +599,8 @@ impl IndexingPipelineParams {
             metastore,
             storage,
             split_store,
-            max_concurrent_split_uploads,
+            max_concurrent_split_uploads_index,
+            max_concurrent_split_uploads_merge,
         })
     }
 }
@@ -714,7 +720,8 @@ mod tests {
             metastore: Arc::new(metastore),
             storage,
             split_store,
-            max_concurrent_split_uploads: 4,
+            max_concurrent_split_uploads_index: 4,
+            max_concurrent_split_uploads_merge: 5,
         };
         let pipeline = IndexingPipeline::new(pipeline_params);
         let (_pipeline_mailbox, pipeline_handler) = universe.spawn_builder().spawn(pipeline);
@@ -801,7 +808,8 @@ mod tests {
             metastore: Arc::new(metastore),
             storage,
             split_store,
-            max_concurrent_split_uploads: 4,
+            max_concurrent_split_uploads_index: 4,
+            max_concurrent_split_uploads_merge: 5,
         };
         let pipeline = IndexingPipeline::new(pipeline_params);
         let (_pipeline_mailbox, pipeline_handler) = universe.spawn_builder().spawn(pipeline);

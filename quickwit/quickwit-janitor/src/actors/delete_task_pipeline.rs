@@ -30,7 +30,7 @@ use quickwit_actors::{
 };
 use quickwit_config::{build_doc_mapper, IndexingSettings};
 use quickwit_indexing::actors::{
-    MergeExecutor, MergeSplitDownloader, Packager, Publisher, Uploader,
+    MergeExecutor, MergeSplitDownloader, Packager, Publisher, Uploader, UploaderType,
 };
 use quickwit_indexing::merge_policy::merge_policy_from_settings;
 use quickwit_indexing::models::{IndexingDirectory, IndexingPipelineId};
@@ -142,7 +142,7 @@ impl DeleteTaskPipeline {
         let split_store =
             IndexingSplitStore::create_without_local_store(self.index_storage.clone());
         let uploader = Uploader::new(
-            "MergeUploader",
+            UploaderType::DeleteUploader,
             self.metastore.clone(),
             split_store.clone(),
             SplitsUpdateMailbox::Publisher(publisher_mailbox),
