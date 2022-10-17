@@ -35,6 +35,7 @@ use once_cell::sync::OnceCell;
 pub use position::Position;
 pub use queue::Queues;
 use quickwit_actors::{Mailbox, Universe};
+use quickwit_config::QuickwitConfig;
 use quickwit_proto::ingest_api::DocBatch;
 use tokio::sync::Mutex;
 
@@ -87,11 +88,9 @@ pub async fn get_ingest_api_service(
 }
 
 /// Starts an [`IngestApiService`] instance at `<data_dir_path>/queues`.
-pub async fn start_ingest_api_service(
-    universe: &Universe,
-    data_dir_path: &Path,
-) -> anyhow::Result<Mailbox<IngestApiService>> {
-    let queues_dir_path = data_dir_path.join(QUEUES_DIR_NAME);
+pub async fn start_ingest_api_service(universe: &Universe) -> anyhow::Result<Mailbox<IngestApiService>> {
+    let config = universe.registry().get_singleton::<QuickwitConfig>();
+    let queues_dir_path = config.data_dir_path.join(QUEUES_DIR_NAME);
     init_ingest_api(universe, &queues_dir_path).await
 }
 

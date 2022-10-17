@@ -17,13 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use tokio::sync::watch;
 use tracing::{debug, error, info};
 
 use crate::envelope::Envelope;
 use crate::mailbox::Inbox;
-use crate::registry::ActorRegistry;
+use crate::registry::Registry;
 use crate::scheduler::Scheduler;
 use crate::supervisor::Supervisor;
 use crate::{
@@ -33,7 +35,7 @@ use crate::{
 /// `SpawnBuilder` makes it possible to configure misc parameters before spawning an actor.
 pub struct SpawnBuilder<A: Actor> {
     scheduler_mailbox: Mailbox<Scheduler>,
-    registry: ActorRegistry,
+    registry: Arc<Registry>,
     kill_switch: KillSwitch,
     #[allow(clippy::type_complexity)]
     mailboxes: Option<(Mailbox<A>, Inbox<A>)>,
@@ -43,7 +45,7 @@ impl<A: Actor> SpawnBuilder<A> {
     pub(crate) fn new(
         scheduler_mailbox: Mailbox<Scheduler>,
         kill_switch: KillSwitch,
-        registry: ActorRegistry,
+        registry: Arc<Registry>,
     ) -> Self {
         SpawnBuilder {
             scheduler_mailbox,
@@ -110,7 +112,7 @@ impl<A: Actor> SpawnBuilder<A> {
         let (ctx, inbox, state_rx) = self.create_actor_context_and_inbox(&actor);
         debug!(actor_id = %ctx.actor_instance_id(), "spawn-actor");
         let mailbox = ctx.mailbox().clone();
-        ctx.registry().register(&mailbox);
+        ctx.registry().register_actor(&mailbox);
         let ctx_clone = ctx.clone();
         let loop_async_actor_future = async move { actor_loop(actor, inbox, ctx).await };
         let join_handle = runtime_handle.spawn(loop_async_actor_future);

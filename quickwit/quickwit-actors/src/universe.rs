@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::registry::{ActorObservation, ActorRegistry};
+use crate::registry::{ActorObservation, Registry};
 use crate::scheduler::{SimulateAdvanceTime, TimeShift};
 use crate::spawn_builder::SpawnBuilder;
 use crate::{Actor, Command, KillSwitch, Mailbox, QueueCapacity, Scheduler};
@@ -34,7 +35,7 @@ pub struct Universe {
     // This killswitch is used for the scheduler, and will be used by default for all spawned
     // actors.
     pub(crate) kill_switch: KillSwitch,
-    pub(crate) registry: ActorRegistry,
+    pub(crate) registry: Arc<Registry>,
 }
 
 impl Universe {
@@ -45,7 +46,7 @@ impl Universe {
         let kill_switch = KillSwitch::default();
         let (fake_mailbox, _inbox) =
             crate::create_mailbox("fake-mailbox".to_string(), QueueCapacity::Unbounded);
-        let registry = ActorRegistry::default();
+        let registry: Arc<Registry> = Default::default();
         let (scheduler_mailbox, _scheduler_inbox) =
             SpawnBuilder::new(fake_mailbox, kill_switch.clone(), registry.clone()).spawn(scheduler);
         Universe {
@@ -55,16 +56,8 @@ impl Universe {
         }
     }
 
-    pub fn get<A: Actor>(&self) -> Vec<Mailbox<A>> {
-        self.registry.get::<A>()
-    }
-
-    pub fn get_one<A: Actor>(&self) -> Option<Mailbox<A>> {
-        self.registry.get_one::<A>()
-    }
-
-    pub async fn observe(&self, timeout: Duration) -> Vec<ActorObservation> {
-        self.registry.observe(timeout).await
+    pub fn registry(&self) -> &Registry {
+        &self.registry
     }
 
     pub fn kill(&self) {

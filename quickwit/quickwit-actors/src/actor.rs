@@ -33,7 +33,7 @@ use tracing::{debug, error};
 
 use crate::actor_state::{ActorState, AtomicState};
 use crate::progress::{Progress, ProtectedZoneGuard};
-use crate::registry::ActorRegistry;
+use crate::registry::Registry;
 use crate::scheduler::{Callback, ScheduleEvent, Scheduler};
 use crate::spawn_builder::SpawnBuilder;
 #[cfg(any(test, feature = "testsuite"))]
@@ -232,7 +232,7 @@ pub struct ActorContextInner<A: Actor> {
     progress: Progress,
     kill_switch: KillSwitch,
     scheduler_mailbox: Mailbox<Scheduler>,
-    registry: ActorRegistry,
+    registry: Arc<Registry>,
     actor_state: AtomicState,
     // Count the number of times the actor has slept.
     // This counter is useful to unsure that obsolete WakeUp
@@ -272,7 +272,7 @@ impl<A: Actor> ActorContext<A> {
         self_mailbox: Mailbox<A>,
         kill_switch: KillSwitch,
         scheduler_mailbox: Mailbox<Scheduler>,
-        registry: ActorRegistry,
+        registry: Arc<Registry>,
         observable_state_tx: watch::Sender<A::ObservableState>,
     ) -> Self {
         ActorContext {
@@ -313,7 +313,7 @@ impl<A: Actor> ActorContext<A> {
         &self.self_mailbox
     }
 
-    pub(crate) fn registry(&self) -> &ActorRegistry {
+    pub(crate) fn registry(&self) -> &Registry {
         &self.registry
     }
 

@@ -99,10 +99,11 @@ fn has_node_with_metastore_service(members: &[ClusterMember]) -> bool {
 }
 
 pub async fn serve_quickwit(
-    config: QuickwitConfig,
+    registry: &quickwit_actors::Registry,
     services: &HashSet<QuickwitService>,
 ) -> anyhow::Result<()> {
     let storage_resolver = quickwit_storage_uri_resolver().clone();
+    let config = registry.get_singleton::<QuickwitConfig>();
     let cluster = quickwit_cluster::start_cluster_service(&config, services).await?;
 
     // Instanciate either a file-backed or postgresql [`Metastore`] if the node runs a `Metastore`
@@ -139,14 +140,16 @@ pub async fn serve_quickwit(
     ));
 
     let universe = Universe::new();
+    universe
+        .registry()
+        .set_singleton(config);
 
     let (ingest_api_service, indexer_service) = if services.contains(&QuickwitService::Indexer) {
-        let ingest_api_service = start_ingest_api_service(&universe, &config.data_dir_path).await?;
+        let ingest_api_service = start_ingest_api_service(&universe).await?;
         // TODO: Move to indexer config?
         let enable_ingest_api = true;
         let indexing_service = start_indexing_service(
             &universe,
-            &config,
             metastore.clone(),
             storage_resolver.clone(),
             enable_ingest_api,
@@ -159,11 +162,11 @@ pub async fn serve_quickwit(
 
     let search_client_pool =
         SearchClientPool::create_and_keep_updated(cluster.ready_member_change_watcher()).await?;
+    universe.registry().set_singleton(search_client_pool);
 
     let janitor_service = if services.contains(&QuickwitService::Janitor) {
         let janitor_service = start_janitor_service(
             &universe,
-            &config,
             metastore.clone(),
             search_client_pool.clone(),
             storage_resolver.clone(),
@@ -175,9 +178,10 @@ pub async fn serve_quickwit(
     };
 
     let search_service: Arc<dyn SearchService> = start_searcher_service(
-        &config,
-        metastore.clone(),
-        storage_resolver.clone(),
+        universe.registry(),
+        // &config,
+        // metastore.clone(),
+        // storage_resolver.clone(),
         search_client_pool,
     )
     .await?;
@@ -193,7 +197,7 @@ pub async fn serve_quickwit(
     let rest_listen_addr = config.rest_listen_addr;
 
     let quickwit_services = QuickwitServices {
-        config: Arc::new(config),
+        config,
         build_info: Arc::new(build_quickwit_build_info()),
         cluster,
         metastore,

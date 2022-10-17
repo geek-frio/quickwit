@@ -19,6 +19,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 quickwit-actors = { workspace = true }
+quickwit-config = { workspace = true }
 quickwit-common = { workspace = true }
 quickwit-proto = { workspace = true }
 

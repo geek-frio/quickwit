@@ -40,7 +40,6 @@ use crate::actors::{DeleteTaskService, GarbageCollector, RetentionPolicyExecutor
 
 pub async fn start_janitor_service(
     universe: &Universe,
-    config: &QuickwitConfig,
     metastore: Arc<dyn Metastore>,
     search_client_pool: SearchClientPool,
     storage_uri_resolver: StorageUriResolver,
@@ -52,6 +51,9 @@ pub async fn start_janitor_service(
     let retention_policy_executor = RetentionPolicyExecutor::new(metastore.clone());
     let (_, retention_policy_executor_handle) =
         universe.spawn_builder().spawn(retention_policy_executor);
+
+    let config = universe.registry()
+        .get_singleton::<QuickwitConfig>();
 
     let delete_task_service = DeleteTaskService::new(
         metastore,

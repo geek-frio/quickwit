@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-use std::any::{Any, TypeId};
+use std::any::{Any, TypeId, type_name};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -70,9 +71,41 @@ impl<A: Actor> JsonObservable for TypedJsonObservable<A> {
     }
 }
 
-#[derive(Default, Clone)]
-pub(crate) struct ActorRegistry {
-    actors: Arc<RwLock<HashMap<TypeId, ActorRegistryForSpecificType>>>,
+#[derive(Default)]
+pub struct Registry {
+    actor_registry: ActorRegistry,
+    singleton_registry: SingletonRegistry,
+}
+
+impl Registry {
+     pub fn register_actor<A: Actor>(&self, mailbox: &Mailbox<A>) {
+        self.actor_registry.register(mailbox);
+    }
+
+    pub async fn observe_actors(&self, timeout: Duration) -> Vec<ActorObservation> {
+        self.actor_registry.observe(timeout).await
+    }
+
+    pub fn get_actor<A: Actor>(&self) -> Vec<Mailbox<A>> {
+        self.actor_registry.get()
+    }
+
+    pub fn get_one_actor<A: Actor>(&self) -> Option<Mailbox<A>> {
+        self.actor_registry.get_one()
+    }
+
+    pub fn get_singleton<T: Any + Sync + Send + 'static>(&self) -> Arc<T> {
+        self.singleton_registry.get()
+    }
+
+    pub fn set_singleton<T: Any + Sync + Send + 'static>(&self, singleton: T) {
+        self.singleton_registry.set(singleton)
+    }
+}
+
+#[derive(Default)]
+struct ActorRegistry {
+    actors: RwLock<HashMap<TypeId, ActorRegistryForSpecificType>>,
 }
 
 struct ActorRegistryForSpecificType {
@@ -185,15 +218,50 @@ fn get_iter<A: Actor>(
         .filter(|mailbox| !mailbox.is_disconnected())
 }
 
+#[derive(Default)]
+pub struct SingletonRegistry {
+    singletons: RwLock<HashMap<TypeId, Arc<dyn Any + Sync + Send + 'static>>>
+}
+
+impl SingletonRegistry {
+    pub fn get<T: Any + Sync + Send + 'static>(&self) -> Arc<T> {
+        let rlock = self.singletons.read().unwrap();
+        if let Some(singleton_any) = rlock.get(&TypeId::of::<T>()) {
+            singleton_any
+                .clone()
+                .downcast::<T>()
+                .expect("Type does not match. This should never happen.")
+                .clone()
+        } else {
+            panic!("Failed to find singleton for `{}`.", type_name::<T>());
+        }
+    }
+
+    pub fn set<T: Any + Sync + Send + 'static>(&self, singleton: T) {
+        let singleton_arc_any: Arc<dyn Any + Send + Sync + 'static> = Arc::new(singleton);
+        let mut wlock = self.singletons.write().unwrap();
+        let type_id = TypeId::of::<T>();
+        match wlock.entry(type_id) {
+            Occupied(_) => {
+                panic!("Setting the same singleton several times for type `{}` is forbidden.", type_name::<T>());
+            },
+            Vacant(vacant_entry) => {
+                vacant_entry.insert(singleton_arc_any);
+            },
+        }
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
-
+    use super::SingletonRegistry;
     use crate::tests::PingReceiverActor;
     use crate::Universe;
 
     #[tokio::test]
-    async fn test_registry() {
+    async fn test_actor_registry() {
         let test_actor = PingReceiverActor::default();
         let universe = Universe::new();
         let (_mailbox, _handle) = universe.spawn_builder().spawn(test_actor);
@@ -226,5 +294,36 @@ mod tests {
         let (_mailbox, _handle) = universe.spawn_builder().spawn(test_actor);
         let obs = universe.observe(Duration::from_millis(1000)).await;
         assert_eq!(obs.len(), 2);
+    }
+
+    struct TestConfig {
+        count: usize
+    }
+    struct TestConfig2 {
+        count: usize
+    }
+
+    #[test]
+    fn test_singleton_registry() {
+        let singleton_registry = SingletonRegistry::default();
+        singleton_registry.set(TestConfig { count: 1 } );
+        singleton_registry.set(TestConfig2 { count: 2 } );
+        assert_eq!(singleton_registry.get::<TestConfig>().count, 1);
+        assert_eq!(singleton_registry.get::<TestConfig2>().count, 2);
+    }
+
+    #[test]
+    #[should_panic(expected="Failed to find singleton for `quickwit_actors::registry::tests::TestConfig`.")]
+    fn test_singleton_registry_missing_should_panic() {
+        let singleton_registry = SingletonRegistry::default();
+        let _ = singleton_registry.get::<TestConfig>();
+    }
+
+    #[test]
+    #[should_panic(expected="Setting the same singleton several times for type `quickwit_actors::registry::tests::TestConfig` is forbidden.")]
+    fn test_singleton_registry_set_several_times_should_panic() {
+        let singleton_registry = SingletonRegistry::default();
+        singleton_registry.set(TestConfig { count: 1});
+        singleton_registry.set(TestConfig { count: 1});
     }
 }

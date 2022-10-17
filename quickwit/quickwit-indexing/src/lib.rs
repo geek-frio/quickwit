@@ -57,12 +57,12 @@ pub fn new_split_id() -> String {
 
 pub async fn start_indexing_service(
     universe: &Universe,
-    config: &QuickwitConfig,
     metastore: Arc<dyn Metastore>,
     storage_resolver: StorageUriResolver,
     enable_ingest_api: bool,
 ) -> anyhow::Result<Mailbox<IndexingService>> {
     info!("Starting indexer service.");
+    let config = universe.registry().get_singleton::<QuickwitConfig>();
     // Spawn indexing service.
     let indexing_service = IndexingService::new(
         config.node_id.clone(),
