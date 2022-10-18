@@ -64,6 +64,7 @@ pub(crate) fn build_query(
     Ok(query)
 }
 
+#[allow(dead_code)]
 fn has_range_clause(user_input_ast: &UserInputAst) -> bool {
     match user_input_ast {
         UserInputAst::Clause(sub_queries) => {
