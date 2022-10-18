@@ -39,6 +39,7 @@ use tracing::{info, instrument, warn, Instrument, Span};
 
 use crate::actors::sequencer::{Sequencer, SequencerCommand};
 use crate::actors::Publisher;
+use crate::metrics::INDEXER_METRICS;
 use crate::models::{
     create_split_metadata, PackagedSplit, PackagedSplitBatch, PublishLock, SplitsUpdate,
 };
@@ -180,8 +181,12 @@ impl Uploader {
             UploaderType::MergeUploader => &CONCURRENT_UPLOAD_PERMITS_MERGE,
             UploaderType::DeleteUploader => &CONCURRENT_UPLOAD_PERMITS_MERGE,
         };
+        let concurrent_upload_permits = concurrent_upload_permits
+            .get_or_init(|| Semaphore::const_new(self.max_concurrent_split_uploads));
+        INDEXER_METRICS
+            .concurrent_upload_available_permits
+            .set(concurrent_upload_permits.available_permits() as i64);
         concurrent_upload_permits
-            .get_or_init(|| Semaphore::const_new(self.max_concurrent_split_uploads))
             .acquire()
             .await
             .context("The uploader semaphore is closed. (This should never happen.)")
