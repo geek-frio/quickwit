@@ -2,6 +2,11 @@ FROM reg.qa.91jkys.com/lang/rust:1.62 as builder
 
 ARG CARGO_FEATURES=quickwit-metastore/postgres,openssl-support
 
+RUN apt-get update -y && \
+    apt-get upgrade -y && \
+    apt-get install -y cmake clang
+
+
 COPY . ./quickwit
 
 WORKDIR /quickwit
