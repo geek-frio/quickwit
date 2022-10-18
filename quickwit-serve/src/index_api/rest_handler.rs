@@ -20,8 +20,10 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use quickwit_config::IndexConfig;
 use quickwit_core::IndexService;
 use quickwit_search::SearchError;
+use serde::de::DeserializeOwned;
 use tracing::info;
 use warp::{Filter, Rejection};
 
@@ -33,11 +35,9 @@ pub fn index_management_handlers(
 ) -> impl Filter<Extract = impl warp::Reply, Error = Rejection> + Clone {
     get_index_metadata_handler(index_service.clone())
         .or(get_indexes_metadatas_handler(index_service.clone()))
-        .or(get_all_splits_handler(index_service))
-    // TODO: comment create/delete handlers and reactivate/update them once we implemented the logic
-    // of routing these requests to the right node, see https://github.com/quickwit-oss/quickwit/issues/1481.
-    //.or(create_index_handler(index_service.clone()))
-    //.or(delete_index_handler(index_service))
+        .or(get_all_splits_handler(index_service.clone()))
+        .or(create_index_handler(index_service.clone()))
+        .or(delete_index_handler(index_service))
 }
 
 fn get_index_metadata_handler(
@@ -95,47 +95,47 @@ async fn get_indexes_metadatas(
 
 // TODO: comment create/delete handlers and reactivate/update them once we implemented the logic of
 // routing these requests to the right node, see https://github.com/quickwit-oss/quickwit/issues/1481.
-// fn create_index_handler(
-//     index_service: Arc<IndexService>,
-// ) -> impl Filter<Extract = impl warp::Reply, Error = Rejection> + Clone {
-//     warp::path!("indexes")
-//         .and(warp::post())
-//         .and(json_body())
-//         .and(warp::path::end().map(move || index_service.clone()))
-//         .and_then(create_index)
-// }
+fn create_index_handler(
+    index_service: Arc<IndexService>,
+) -> impl Filter<Extract = impl warp::Reply, Error = Rejection> + Clone {
+    warp::path!("indexes")
+        .and(warp::post())
+        .and(json_body())
+        .and(warp::path::end().map(move || index_service.clone()))
+        .and_then(create_index)
+}
 
-// fn json_body<T: DeserializeOwned + Send>(
-// ) -> impl Filter<Extract = (T,), Error = warp::Rejection> + Clone {
-//     warp::body::content_length_limit(1024 * 1024).and(warp::body::json())
-// }
+fn json_body<T: DeserializeOwned + Send>(
+) -> impl Filter<Extract = (T,), Error = warp::Rejection> + Clone {
+    warp::body::content_length_limit(1024 * 1024).and(warp::body::json())
+}
 
-// async fn create_index(
-//     index_config: IndexConfig,
-//     index_service: Arc<IndexService>,
-// ) -> Result<impl warp::Reply, Infallible> {
-//     info!(index_id = %index_config.index_id, "create-index");
-//     let index_metadata = index_service.create_index(index_config).await;
-//     Ok(Format::default().make_rest_reply_non_serializable_error(index_metadata))
-// }
+async fn create_index(
+    index_config: IndexConfig,
+    index_service: Arc<IndexService>,
+) -> Result<impl warp::Reply, Infallible> {
+    info!(index_id = %index_config.index_id, "create-index");
+    let index_metadata = index_service.create_index(index_config, false).await;
+    Ok(Format::default().make_rest_reply_non_serializable_error(index_metadata))
+}
 
-// fn delete_index_handler(
-//     index_service: Arc<IndexService>,
-// ) -> impl Filter<Extract = impl warp::Reply, Error = Rejection> + Clone {
-//     warp::path!("indexes" / String)
-//         .and(warp::delete())
-//         .and(warp::path::end().map(move || index_service.clone()))
-//         .and_then(delete_index)
-// }
+fn delete_index_handler(
+    index_service: Arc<IndexService>,
+) -> impl Filter<Extract = impl warp::Reply, Error = Rejection> + Clone {
+    warp::path!("indexes" / String)
+        .and(warp::delete())
+        .and(warp::path::end().map(move || index_service.clone()))
+        .and_then(delete_index)
+}
 
-// async fn delete_index(
-//     index_id: String,
-//     index_service: Arc<IndexService>,
-// ) -> Result<impl warp::Reply, Infallible> {
-//     info!(index_id = %index_id, "delete-index");
-//     let file_entries_res = index_service.delete_index(&index_id, false).await;
-//     Ok(Format::default().make_rest_reply_non_serializable_error(file_entries_res))
-// }
+async fn delete_index(
+    index_id: String,
+    index_service: Arc<IndexService>,
+) -> Result<impl warp::Reply, Infallible> {
+    info!(index_id = %index_id, "delete-index");
+    let file_entries_res = index_service.delete_index(&index_id, false).await;
+    Ok(Format::default().make_rest_reply_non_serializable_error(file_entries_res))
+}
 
 #[cfg(test)]
 mod tests {
