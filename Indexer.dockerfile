@@ -12,7 +12,7 @@ RUN echo "Building workspace with feature(s) '$CARGO_FEATURES' and profile '$CAR
     && mkdir -p /quickwit/bin \
     && mv target/release/quickwit  /quickwit/bin/quickwit
 
-FROM reg.qa.91jkys.com/appenv/configer:v0.1 AS quickwit
+FROM ubuntu:22.04 AS quickwit
 
 RUN apt-get -y update \
     && apt-get -y install ca-certificates \
