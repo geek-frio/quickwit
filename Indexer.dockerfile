@@ -2,6 +2,8 @@ FROM reg.qa.91jkys.com/lang/rust-ci:latest as builder
 
 ARG CARGO_FEATURES=quickwit-metastore/postgres,openssl-support
 
+ARG SCCACHE_REDIS
+
 COPY . ./quickwit
 
 WORKDIR /quickwit
