@@ -1,11 +1,6 @@
-FROM reg.qa.91jkys.com/lang/rust:1.62 as builder
+FROM reg.qa.91jkys.com/lang/rust-ci:latest as builder
 
 ARG CARGO_FEATURES=quickwit-metastore/postgres,openssl-support
-
-RUN apt-get update -y && \
-    apt-get upgrade -y && \
-    apt-get install -y cmake clang
-
 
 COPY . ./quickwit
 
@@ -17,7 +12,7 @@ RUN echo "Building workspace with feature(s) '$CARGO_FEATURES' and profile '$CAR
     && mkdir -p /quickwit/bin \
     && mv target/release/quickwit  /quickwit/bin/quickwit
 
-FROM ubuntu:22.04 AS quickwit
+FROM reg.qa.91jkys.com/appenv/configer:v0.1 AS quickwit
 
 RUN apt-get -y update \
     && apt-get -y install ca-certificates \
