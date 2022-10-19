@@ -61,9 +61,9 @@ impl FileHandle for StorageDirectoryFileHandle {
         }
 
         // Temp for qa test, code will be removed before deploy to production env
-        //        use backtrace::Backtrace;
+                use backtrace::Backtrace;
         info!("Range is:{:?}", byte_range);
-        //        info!("Error backtrace: {:?}", Backtrace::new());
+                info!("Error backtrace: {:?}", Backtrace::new());
 
         // 临时解决range查询问题，后续会优化掉上层调用走async调用的方式
         static RUNTIME_CELL: OnceCell<Runtime> = OnceCell::new();
