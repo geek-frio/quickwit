@@ -142,7 +142,7 @@ impl DeleteTaskPlanner {
                     ctx,
                 )
                 .await?;
-            ctx.progress();
+            ctx.record_progress();
             info!(
                 index_id = self.index_id,
                 last_delete_opstamp = last_delete_opstamp,
@@ -160,7 +160,7 @@ impl DeleteTaskPlanner {
                 splits_with_deletes.len(),
                 splits_without_deletes.len()
             );
-            ctx.progress();
+            ctx.record_progress();
 
             // Updates `delete_opstamp` of splits that won't undergo delete operations.
             let split_ids_without_delete = splits_without_deletes
@@ -174,7 +174,7 @@ impl DeleteTaskPlanner {
                     last_delete_opstamp,
                 )
                 .await?;
-            ctx.progress();
+            ctx.record_progress();
 
             // Sends delete operations.
             for split_with_deletes in splits_with_deletes {
@@ -209,7 +209,7 @@ impl DeleteTaskPlanner {
                 .metastore
                 .list_delete_tasks(&self.index_id, stale_split.split_metadata.delete_opstamp)
                 .await?;
-            ctx.progress();
+            ctx.record_progress();
 
             // Keep only delete tasks that matches the split metadata.
             let pending_and_matching_metadata_tasks = pending_tasks
@@ -247,7 +247,7 @@ impl DeleteTaskPlanner {
                     ctx,
                 )
                 .await?;
-            ctx.progress();
+            ctx.record_progress();
 
             if has_split_docs_to_delete {
                 splits_with_deletes.push(stale_split.clone());
@@ -294,7 +294,7 @@ impl DeleteTaskPlanner {
                 vec![search_job.clone()],
             );
             let response = search_client.leaf_search(leaf_search_request).await?;
-            ctx.progress();
+            ctx.record_progress();
             if response.num_hits > 0 {
                 return Ok(true);
             }
@@ -364,7 +364,7 @@ impl Handler<PlanDeleteOperationsLoop> for DeleteTaskPlanner {
 
 #[cfg(test)]
 mod tests {
-    use quickwit_actors::{create_test_mailbox, ActorState, Universe};
+    use quickwit_actors::{create_test_mailbox, ActorStateId, Universe};
     use quickwit_config::build_doc_mapper;
     use quickwit_indexing::merge_policy::{MergeOperation, NopMergePolicy};
     use quickwit_indexing::TestSandbox;
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(all_splits[2].split_metadata.delete_opstamp, 0);
 
         // Check actor state.
-        assert_eq!(delete_planner_executor_handle.state(), ActorState::Idle);
+        assert_eq!(delete_planner_executor_handle.state(), ActorStateId::Idle);
 
         Ok(())
     }
