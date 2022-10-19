@@ -71,6 +71,7 @@ impl FileHandle for StorageDirectoryFileHandle {
             Builder::new_multi_thread()
                 .worker_threads(4)
                 .thread_name("read_bytes")
+                .enable_io()
                 .build()
                 .unwrap()
         });
@@ -82,6 +83,8 @@ impl FileHandle for StorageDirectoryFileHandle {
 
     #[instrument(level = "debug", fields(path = %self.path.to_string_lossy()), skip(self))]
     async fn read_bytes_async(&self, byte_range: Range<usize>) -> AsyncIoResult<OwnedBytes> {
+//        use backtrace::Backtrace;
+        //        info!("Error backtrace: {:?}", Backtrace::new());
         if byte_range.is_empty() {
             return Ok(OwnedBytes::empty());
         }
