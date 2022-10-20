@@ -309,7 +309,7 @@ impl IndexingPipeline {
             .set_kill_switch(self.kill_switch.clone())
             .spawn();
 
-        let target_docs_limit = std::cmp::max(
+        let target_docs_limit = std::cmp::min(
             self.params.indexing_settings.split_num_docs_target as usize,
             1_000_000usize,
         );
