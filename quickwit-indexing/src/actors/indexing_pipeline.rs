@@ -193,6 +193,11 @@ impl IndexingPipeline {
     async fn spawn_pipeline(&mut self, ctx: &ActorContext<Self>) -> anyhow::Result<()> {
         self.statistics.num_spawn_attempts += 1;
         self.kill_switch = KillSwitch::default();
+
+        let target_docs_limit = std::cmp::min(
+            self.params.indexing_settings.split_num_docs_target as usize,
+            1_000_000usize,
+        );
         let stable_multitenant_merge_policy = StableMultitenantWithTimestampMergePolicy {
             demux_enabled: self.params.indexing_settings.demux_enabled,
             demux_factor: self.params.indexing_settings.merge_policy.demux_factor,
@@ -200,7 +205,7 @@ impl IndexingPipeline {
             merge_enabled: self.params.indexing_settings.merge_enabled,
             merge_factor: self.params.indexing_settings.merge_policy.merge_factor,
             max_merge_factor: self.params.indexing_settings.merge_policy.max_merge_factor,
-            split_num_docs_target: self.params.indexing_settings.split_num_docs_target,
+            split_num_docs_target: target_docs_limit,
             ..Default::default()
         };
         let merge_policy: Arc<dyn MergePolicy> = Arc::new(stable_multitenant_merge_policy);
@@ -309,10 +314,6 @@ impl IndexingPipeline {
             .set_kill_switch(self.kill_switch.clone())
             .spawn();
 
-        let target_docs_limit = std::cmp::min(
-            self.params.indexing_settings.split_num_docs_target as usize,
-            1_000_000usize,
-        );
         let merge_executor = MergeExecutor::new(
             self.params.index_id.clone(),
             merge_packager_mailbox,
