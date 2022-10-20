@@ -1,6 +1,9 @@
-FROM reg.qa.91jkys.com/lang/rust-ci:latest as builder
+FROM reg.qa.91jkys.com/lang/rust-ci:10.19 as builder
 
 ARG CARGO_FEATURES=quickwit-metastore/postgres,openssl-support
+
+ENV SCCACHE_REDIS redis://172.17.0.1 \
+    RUSTC_WRAPPER=sccache
 
 COPY . ./quickwit
 
