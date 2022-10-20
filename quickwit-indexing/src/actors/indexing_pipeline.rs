@@ -218,10 +218,18 @@ impl IndexingPipeline {
             },
             merge_policy.clone(),
         )?;
+
+        let now = chrono::offset::Local::now();
+        let time_range = (now.timestamp_millis() - 7 * 24 * 3600)..now.timestamp_millis();
         let published_splits = self
             .params
             .metastore
-            .list_splits(&self.params.index_id, SplitState::Published, None, None)
+            .list_splits(
+                &self.params.index_id,
+                SplitState::Published,
+                Some(time_range),
+                None,
+            )
             .await?
             .into_iter()
             .map(|split| split.split_metadata)
@@ -301,13 +309,17 @@ impl IndexingPipeline {
             .set_kill_switch(self.kill_switch.clone())
             .spawn();
 
+        let target_docs_limit = std::cmp::max(
+            self.params.indexing_settings.split_num_docs_target as usize,
+            1_000_000usize,
+        );
         let merge_executor = MergeExecutor::new(
             self.params.index_id.clone(),
             merge_packager_mailbox,
             self.params.indexing_settings.timestamp_field.clone(),
             self.params.indexing_settings.demux_field.clone(),
-            self.params.indexing_settings.split_num_docs_target as usize,
-            self.params.indexing_settings.split_num_docs_target as usize * 2,
+            target_docs_limit,
+            target_docs_limit * 2,
         );
         let (merge_executor_mailbox, merge_executor_handler) = ctx
             .spawn_actor(merge_executor)

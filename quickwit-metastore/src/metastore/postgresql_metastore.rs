@@ -337,7 +337,7 @@ impl PostgresqlMetastore {
             select_statement = select_statement.filter(tags_filter_expression_helper(tags));
         }
 
-        debug!(sql=%debug_query::<Pg, _>(&select_statement).to_string());
+        info!(sql=%debug_query::<Pg, _>(&select_statement).to_string());
         let splits: Vec<model::Split> = select_statement
             .load(conn)
             .map_err(MetastoreError::DbError)?;

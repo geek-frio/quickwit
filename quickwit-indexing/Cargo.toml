@@ -62,6 +62,7 @@ tokio = { version = "1", features = ["sync"] }
 tokio-stream = "0.1"
 tracing = "0.1.29"
 ulid = "0.6"
+chrono = { version = "0.4" }
 
 [features]
 kafka = ["rdkafka"]
