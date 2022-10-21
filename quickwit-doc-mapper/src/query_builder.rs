@@ -20,7 +20,7 @@
 use quickwit_proto::SearchRequest;
 use tantivy::query::{Query, QueryParser, QueryParserError as TantivyQueryParserError};
 use tantivy::schema::{Field, Schema};
-use tantivy_query_grammar::{UserInputAst, UserInputLeaf, UserInputLiteral};
+use tantivy_query_grammar::{parse_query, Occur, UserInputAst, UserInputLeaf, UserInputLiteral};
 
 use crate::sort_by::validate_sort_by_field_name;
 use crate::{QueryParserError, DYNAMIC_FIELD_NAME, QUICKWIT_TOKENIZER_MANAGER};
@@ -38,9 +38,9 @@ pub(crate) fn build_query(
         validate_sort_by_field_name(sort_by_field, &schema)?;
     }
 
-//    if has_range_clause(&user_input_ast) {
-//        return Err(anyhow::anyhow!("Range queries are not currently allowed.").into());
-//    }
+    //    if has_range_clause(&user_input_ast) {
+    //        return Err(anyhow::anyhow!("Range queries are not currently allowed.").into());
+    //    }
 
     if needs_default_search_field(&user_input_ast)
         && request.search_fields.is_empty()
@@ -62,6 +62,100 @@ pub(crate) fn build_query(
     query_parser.set_conjunction_by_default();
     let query = query_parser.parse_query(&request.query)?;
     Ok(query)
+}
+
+fn is_range_query_ok(
+    query: &str,
+) -> Result<
+    (
+        bool,
+        Option<Vec<(Option<Occur>, UserInputAst)>>,
+        Option<Vec<(Option<Occur>, UserInputAst)>>,
+    ),
+    QueryParserError,
+> {
+    let mut depth = 0;
+    let mut range_count = 0;
+
+    let query_ast = tantivy_query_grammar::parse_query(query)
+        .map_err(|_| TantivyQueryParserError::SyntaxError(query.to_string()))?;
+    traverse_range(Box::new(query_ast), &mut depth, &mut range_count);
+
+    if depth > 1 && range_count > 1 {
+        return Err(TantivyQueryParserError::SyntaxError(
+            "Not support multiple clause when there is range query".to_string(),
+        )
+        .into());
+    } else if range_count > 0 && depth == 1 {
+        let mut origin_vec = Vec::new();
+        let mut range_vec = Vec::new();
+
+        let query_ast = tantivy_query_grammar::parse_query(query)
+            .map_err(|_| TantivyQueryParserError::SyntaxError(query.to_string()))?;
+
+        traverse_remove_range(Box::new(query_ast), &mut range_vec, &mut origin_vec, None);
+
+        return Ok((true, Some(origin_vec), Some(range_vec)));
+    } else {
+        return Ok((false, None, None));
+    }
+}
+
+fn traverse_remove_range(
+    query_ast: Box<UserInputAst>,
+    range_vec: &mut Vec<(Option<Occur>, UserInputAst)>,
+    origin_vec: &mut Vec<(Option<Occur>, UserInputAst)>,
+    occur: Option<Occur>,
+) {
+    match *query_ast {
+        UserInputAst::Boost(b, _) => traverse_remove_range(b, range_vec, origin_vec, occur),
+        UserInputAst::Clause(v) => {
+            for (occur, ast) in v {
+                traverse_remove_range(Box::new(ast), range_vec, origin_vec, occur);
+            }
+        }
+        UserInputAst::Leaf(ast) => {
+            if let UserInputLeaf::Range {
+                field,
+                lower,
+                upper,
+            } = *ast
+            {
+                range_vec.push((
+                    occur,
+                    UserInputAst::Leaf(Box::new(UserInputLeaf::Range {
+                        field,
+                        lower,
+                        upper,
+                    })),
+                ))
+            } else {
+                origin_vec.push((occur, UserInputAst::Leaf(ast)));
+            }
+        }
+    }
+}
+
+fn traverse_range(query_ast: Box<UserInputAst>, depth: &mut i64, range_count: &mut i64) {
+    match *query_ast {
+        UserInputAst::Boost(b, _) => traverse_range(b, depth, range_count),
+        UserInputAst::Clause(v) => {
+            *depth = *depth + 1;
+            for (_, ast) in v {
+                traverse_range(Box::new(ast), depth, range_count);
+            }
+        }
+        UserInputAst::Leaf(ast) => {
+            if let UserInputLeaf::Range {
+                field: _,
+                lower: _,
+                upper: _,
+            } = *ast
+            {
+                *range_count = *range_count + 1;
+            }
+        }
+    }
 }
 
 #[allow(dead_code)]
