@@ -18,7 +18,9 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 use quickwit_proto::SearchRequest;
-use tantivy::query::{Query, QueryParser, QueryParserError as TantivyQueryParserError};
+use tantivy::query::{
+    convert_to_query, Query, QueryParser, QueryParserError as TantivyQueryParserError,
+};
 use tantivy::schema::{Field, Schema};
 use tantivy_query_grammar::{parse_query, Occur, UserInputAst, UserInputLeaf, UserInputLiteral};
 
@@ -59,9 +61,16 @@ pub(crate) fn build_query(
 
     let mut query_parser =
         QueryParser::new(schema, search_fields, QUICKWIT_TOKENIZER_MANAGER.clone());
-    query_parser.set_conjunction_by_default();
-    let query = query_parser.parse_query(&request.query)?;
-    Ok(query)
+    let (is_range, origin, range_vec) = is_range_query_ok(&request.query)?;
+    if is_range {
+        let logical = query_parser.compute_logical_ast(UserInputAst::Clause(origin.unwrap()))?;
+        let query = convert_to_query(logical);
+        Ok(query)
+    } else {
+        query_parser.set_conjunction_by_default();
+        let query = query_parser.parse_query(&request.query)?;
+        Ok(query)
+    }
 }
 
 fn is_range_query_ok(
