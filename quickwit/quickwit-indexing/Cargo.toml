@@ -12,6 +12,7 @@ documentation = "https://quickwit.io/docs/"
 [dependencies]
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
+async-speed-limit = { workspace=true }
 async-trait = { workspace = true }
 backoff = { workspace = true, optional = true }
 byte-unit = { workspace = true }

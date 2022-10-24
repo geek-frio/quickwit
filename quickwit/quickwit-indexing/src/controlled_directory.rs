@@ -23,7 +23,9 @@ use std::sync::Arc;
 use std::{fmt, io};
 
 use arc_swap::ArcSwap;
+use async_speed_limit::Limiter;
 use quickwit_actors::{KillSwitch, Progress, ProtectedZoneGuard};
+use quickwit_common::metrics::IntCounter;
 use tantivy::directory::error::{DeleteError, OpenReadError, OpenWriteError};
 use tantivy::directory::{
     AntiCallToken, FileHandle, TerminatingWrite, WatchCallback, WatchHandle, WritePtr,
@@ -51,6 +53,8 @@ impl ControlledDirectory {
         directory: Box<dyn Directory>,
         progress: Progress,
         kill_switch: KillSwitch,
+        limiter: Limiter,
+        io_counter: IntCounter,
     ) -> ControlledDirectory {
         ControlledDirectory {
             inner: Inner {
@@ -59,6 +63,8 @@ impl ControlledDirectory {
                     kill_switch,
                 }))),
                 underlying: directory.into(),
+                io_limiter: limiter,
+                io_counter,
             },
         }
     }
@@ -105,11 +111,15 @@ impl Controls {
 struct Inner {
     controls: Arc<ArcSwap<Controls>>,
     underlying: Arc<dyn Directory>,
+    io_limiter: Limiter,
+    io_counter: IntCounter,
 }
 
 struct ControlledWrite {
     controls: Arc<ArcSwap<Controls>>,
     underlying_wrt: Box<dyn TerminatingWrite>,
+    io_limiter: Limiter,
+    io_counter: IntCounter,
 }
 
 impl ControlledWrite {
@@ -118,33 +128,28 @@ impl ControlledWrite {
     }
 }
 
+const MAX_NUM_BYTES_WRITTEN_AT_ONCE: usize = 1 << 20; // 1MB
+
 impl io::Write for ControlledWrite {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let buf = if buf.len() > MAX_NUM_BYTES_WRITTEN_AT_ONCE {
+            &buf[..MAX_NUM_BYTES_WRITTEN_AT_ONCE]
+        } else {
+            buf
+        };
         let _guard = self.check_if_alive()?;
-        self.underlying_wrt.write(buf)
+        let written_num_bytes = self.underlying_wrt.write(buf)?;
+        self.io_limiter.blocking_consume(written_num_bytes);
+        self.io_counter.inc_by(written_num_bytes as u64);
+        Ok(written_num_bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         // We voluntarily avoid to check the kill switch on flush.
-        // This is because the RAMDirectory currently panics if flush
-        // is not called before Drop.
+        // This is because the `RAMDirectory` currently panics if flush
+        // is not called before `Drop`.
         let _guard = self.check_if_alive();
         self.underlying_wrt.flush()
-    }
-
-    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        let _guard = self.check_if_alive()?;
-        self.underlying_wrt.write_vectored(bufs)
-    }
-
-    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        let _guard = self.check_if_alive()?;
-        self.underlying_wrt.write_all(buf)
-    }
-
-    fn write_fmt(&mut self, fmt: fmt::Arguments<'_>) -> io::Result<()> {
-        let _guard = self.check_if_alive()?;
-        self.underlying_wrt.write_fmt(fmt)
     }
 }
 
@@ -185,6 +190,8 @@ impl Directory for ControlledDirectory {
         let controlled_wrt = ControlledWrite {
             controls,
             underlying_wrt,
+            io_limiter: self.inner.io_limiter.clone(),
+            io_counter: self.inner.io_counter.clone(),
         };
         Ok(BufWriter::with_capacity(
             BUFFER_NUM_BYTES,
@@ -234,24 +241,40 @@ mod tests {
     fn test_records_progress_on_write() -> anyhow::Result<()> {
         let directory = RamDirectory::default();
         let progress = Progress::default();
-        let controlled_directory =
-            ControlledDirectory::new(Box::new(directory), progress.clone(), KillSwitch::default());
+        let io_counter = IntCounter::new("test_counter", "Just for tests").unwrap();
+        let controlled_directory = ControlledDirectory::new(
+            Box::new(directory),
+            progress.clone(),
+            KillSwitch::default(),
+            Limiter::new(f64::INFINITY),
+            io_counter.clone(),
+        );
         assert!(progress.registered_activity_since_last_call());
         assert!(!progress.registered_activity_since_last_call());
         let mut wrt = controlled_directory.open_write(Path::new("test"))?;
         assert!(progress.registered_activity_since_last_call());
         // We use a large buffer to force the buf writer to flush at least once.
         let large_buffer = vec![0u8; wrt.capacity() + 1];
+        assert_eq!(io_counter.get(), 0u64);
         wrt.write_all(&large_buffer)?;
+        assert_eq!(io_counter.get(), 8_193u64);
         assert!(progress.registered_activity_since_last_call());
         wrt.write_all(b"small payload")?;
+        // The buffering makes it so that this last write does not
+        // get actually written right away.
+        assert_eq!(io_counter.get(), 8_193u64);
         // Here we check that the progress only concerns is only
         // trigger when the BufWriter flushes.
         assert!(!progress.registered_activity_since_last_call());
         wrt.write_all(&large_buffer)?;
+        assert_eq!(io_counter.get(), 16_399);
         assert!(progress.registered_activity_since_last_call());
         assert!(!progress.registered_activity_since_last_call());
+        wrt.write_all(&b"aa"[..])?;
+        assert_eq!(io_counter.get(), 16_399);
         wrt.terminate()?;
+        // Flush works as expected and makes sure all data buffered goes through
+        assert_eq!(io_counter.get(), 16_401);
         assert!(progress.registered_activity_since_last_call());
         Ok(())
     }
@@ -260,10 +283,13 @@ mod tests {
     fn test_records_kill_switch_triggers_io_error() -> anyhow::Result<()> {
         let directory = RamDirectory::default();
         let kill_switch = KillSwitch::default();
+        let io_counter = IntCounter::new("test_counter2", "This is a test counter.").unwrap();
         let controlled_directory = ControlledDirectory::new(
             Box::new(directory),
             Progress::default(),
             kill_switch.clone(),
+            Limiter::new(f64::INFINITY),
+            io_counter,
         );
         let mut wrt = controlled_directory.open_write(Path::new("test"))?;
         // We use a large buffer to force the buf writer to flush at least once.

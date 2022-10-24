@@ -11,6 +11,7 @@ documentation = "https://quickwit.io/docs/"
 
 [dependencies]
 anyhow = { workspace = true }
+async-speed-limit = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }

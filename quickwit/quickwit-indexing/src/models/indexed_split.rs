@@ -20,6 +20,7 @@
 use std::fmt;
 use std::path::Path;
 
+use async_speed_limit::Limiter;
 use quickwit_actors::{KillSwitch, Progress};
 use quickwit_metastore::checkpoint::IndexCheckpointDelta;
 use tantivy::directory::MmapDirectory;
@@ -91,8 +92,16 @@ impl IndexedSplitBuilder {
             scratch_directory.named_temp_child(split_scratch_directory_prefix)?;
         let mmap_directory = MmapDirectory::open(split_scratch_directory.path())?;
         let box_mmap_directory = Box::new(mmap_directory);
-        let controlled_directory =
-            ControlledDirectory::new(box_mmap_directory, progress, kill_switch);
+        let io_counter = crate::metrics::INDEXER_METRICS
+            .indexer_write_num_bytes_total
+            .with_label_values(&[pipeline_id.index_id.as_str()]);
+        let controlled_directory = ControlledDirectory::new(
+            box_mmap_directory,
+            progress,
+            kill_switch,
+            Limiter::new(f64::INFINITY),
+            io_counter,
+        );
         let index_writer =
             index_builder.single_segment_index_writer(controlled_directory.clone(), 10_000_000)?;
         Ok(Self {
