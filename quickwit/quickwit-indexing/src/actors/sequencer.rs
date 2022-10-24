@@ -21,7 +21,7 @@ use std::fmt::Debug;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use quickwit_actors::{Actor, ActorContext, ActorExitStatus, Handler, Mailbox};
+use quickwit_actors::{Actor, ActorContext, ActorExitStatus, Handler, Mailbox, QueueCapacity};
 use tokio::sync::oneshot;
 
 /// The sequencer serves as a proxy to another actor,
@@ -48,6 +48,10 @@ impl<A: Actor> Sequencer<A> {
 #[async_trait]
 impl<A: Actor> Actor for Sequencer<A> {
     type ObservableState = ();
+
+    fn queue_capacity(&self) -> QueueCapacity {
+        QueueCapacity::Bounded(2)
+    }
 
     fn observable_state(&self) {}
 }
