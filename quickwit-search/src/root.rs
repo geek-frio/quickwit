@@ -19,6 +19,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use futures::future::try_join_all;
 use itertools::Itertools;
@@ -179,6 +180,7 @@ pub async fn root_search(
         })
         .collect();
 
+    let now = Instant::now();
     let jobs: Vec<SearchJob> = split_metadatas.iter().map(SearchJob::from).collect();
     let assigned_leaf_search_jobs = client_pool.assign_jobs(jobs, &HashSet::default())?;
     debug!(assigned_leaf_search_jobs=?assigned_leaf_search_jobs, "Assigned leaf search jobs.");
@@ -197,6 +199,12 @@ pub async fn root_search(
     )
     .await?;
 
+    tracing::info!(
+        "Stage1: Get all the split response cost:{}",
+        now.elapsed().as_millis()
+    );
+
+    let now = Instant::now();
     // Creates a collector which merges responses into one
     let merge_collector = make_merge_collector(search_request)?;
 
@@ -214,6 +222,10 @@ pub async fn root_search(
             })?;
     debug!(leaf_search_response = ?leaf_search_response, "Merged leaf search response.");
 
+    tracing::info!(
+        "Stage2: Merge all the response cost:{:?}",
+        now.elapsed().as_millis()
+    );
     if !leaf_search_response.failed_splits.is_empty() {
         error!(failed_splits = ?leaf_search_response.failed_splits, "Leaf search response contains at least one failed split.");
         let errors: String = leaf_search_response
@@ -225,6 +237,7 @@ pub async fn root_search(
         return Err(SearchError::InternalError(errors));
     }
 
+    let now = Instant::now();
     let client_fetch_docs_task: Vec<(SearchServiceClient, Vec<FetchDocsJob>)> =
         assign_client_fetch_doc_tasks(
             &leaf_search_response.partial_hits,
@@ -255,6 +268,9 @@ pub async fn root_search(
 
     let fetch_docs_resps: Vec<FetchDocsResponse> = try_join_all(fetch_docs_resp_futures).await?;
 
+    tracing::info!("Stage3: fetch all docs cost:{}", now.elapsed().as_millis());
+
+    let now = Instant::now();
     // Merge the fetched docs.
     let leaf_hits = fetch_docs_resps
         .into_iter()
@@ -287,6 +303,10 @@ pub async fn root_search(
         None
     };
 
+    tracing::info!(
+        "Stage 4: Merge all the fetched docs result cost:{}",
+        now.elapsed().as_millis()
+    );
     Ok(SearchResponse {
         aggregation,
         num_hits: leaf_search_response.num_hits,

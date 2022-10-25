@@ -17,12 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
-
 use itertools::Itertools;
 use quickwit_doc_mapper::{DocMapper, SortBy, SortOrder};
 use quickwit_proto::{LeafSearchResponse, PartialHit, SearchRequest};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
+use std::ops::Bound;
 use tantivy::aggregation::agg_req::{
     get_fast_field_names, get_term_dict_field_names, Aggregations,
 };
@@ -30,10 +30,13 @@ use tantivy::aggregation::intermediate_agg_result::IntermediateAggregationResult
 use tantivy::aggregation::AggregationSegmentCollector;
 use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::fastfield::{DynamicFastFieldReader, FastFieldReader};
+use tantivy::query::Occur;
 use tantivy::schema::{Field, Schema};
 use tantivy::{DocId, Score, SegmentOrdinal, SegmentReader};
+use tantivy_query_grammar::{UserInputAst, UserInputBound, UserInputLeaf};
+use tracing::info;
 
-use crate::filters::TimestampFilter;
+use crate::filters::{MultipleFieldFilter, TimestampFilter};
 use crate::partial_hit_sorting_key;
 
 /// The `SortingFieldComputer` can be seen as the specialization of `SortBy` applied to a specific
@@ -142,6 +145,7 @@ pub struct QuickwitSegmentCollector {
     segment_ord: u32,
     timestamp_filter_opt: Option<TimestampFilter>,
     aggregation: Option<AggregationSegmentCollector>,
+    range_filter: Option<MultipleFieldFilter>,
 }
 
 impl QuickwitSegmentCollector {
@@ -174,7 +178,15 @@ impl QuickwitSegmentCollector {
 
     fn accept_document(&self, doc_id: DocId) -> bool {
         if let Some(ref timestamp_filter) = self.timestamp_filter_opt {
-            return timestamp_filter.is_within_range(doc_id);
+            if !timestamp_filter.is_within_range(doc_id) {
+                return false;
+            }
+        }
+
+        if let Some(ref range_filter) = self.range_filter {
+            if !range_filter.is_within_range(doc_id) {
+                return false;
+            }
         }
         true
     }
@@ -245,6 +257,7 @@ pub struct QuickwitCollector {
     pub start_timestamp_opt: Option<i64>,
     pub end_timestamp_opt: Option<i64>,
     pub aggregation: Option<Aggregations>,
+    pub fast_filter_range: Option<Vec<(String, (Bound<i64>, Bound<i64>))>>,
 }
 
 impl QuickwitCollector {
@@ -261,6 +274,47 @@ impl QuickwitCollector {
             term_dict_field_names.extend(get_term_dict_field_names(aggregate));
         }
         term_dict_field_names
+    }
+    pub fn add_range_filters(&mut self, range: Vec<(Occur, UserInputAst)>) -> Vec<String> {
+        let mut range_fields = Vec::new();
+        let range = range
+            .into_iter()
+            .map(|(_occur, input)| {
+                if let UserInputAst::Leaf(b) = input {
+                    if let UserInputLeaf::Range {
+                        field,
+                        lower,
+                        upper,
+                    } = *b
+                    {
+                        if let Some(field) = field {
+                            let start = Self::convert_bound(lower, true);
+                            let end = Self::convert_bound(upper, false);
+                            range_fields.push(field.clone());
+                            return Some((field, (start, end)));
+                        }
+                    }
+                }
+                None
+            })
+            .filter(|v| v.is_some())
+            .map(|v| v.unwrap())
+            .collect::<Vec<(String, (Bound<i64>, Bound<i64>))>>();
+        self.fast_filter_range = Some(range);
+        range_fields
+    }
+
+    fn convert_bound(bound: UserInputBound, is_start: bool) -> Bound<i64> {
+        let default_val = if is_start { i64::MIN } else { i64::MAX };
+        match bound {
+            UserInputBound::Inclusive(v) => {
+                Bound::Included(v.parse::<i64>().unwrap_or(default_val))
+            }
+            UserInputBound::Exclusive(v) => {
+                Bound::Excluded(v.parse::<i64>().unwrap_or(default_val))
+            }
+            UserInputBound::Unbounded => Bound::Excluded(default_val),
+        }
     }
 }
 
@@ -289,6 +343,26 @@ impl Collector for QuickwitCollector {
             None
         };
 
+        info!(
+            "for_segment method is called!fast_filter_range:{:?}",
+            self.fast_filter_range
+        );
+
+        let multiple_filter_opt = if self.fast_filter_range.is_some() {
+            let mut fields = Vec::new();
+            let fast_filter_range = self.fast_filter_range.clone().unwrap();
+            let bounds = fast_filter_range
+                .into_iter()
+                .map(|(field_name, b)| {
+                    fields.push(field_name);
+                    b
+                })
+                .collect::<Vec<(Bound<i64>, Bound<i64>)>>();
+            MultipleFieldFilter::new(fields, bounds, segment_reader)?
+        } else {
+            None
+        };
+
         Ok(QuickwitSegmentCollector {
             num_hits: 0u64,
             split_id: self.split_id.clone(),
@@ -304,6 +378,7 @@ impl Collector for QuickwitCollector {
                     AggregationSegmentCollector::from_agg_req_and_reader(aggs, segment_reader)
                 })
                 .transpose()?,
+            range_filter: multiple_filter_opt,
         })
     }
 
@@ -450,6 +525,7 @@ pub fn make_collector_for_split(
         start_timestamp_opt: search_request.start_timestamp,
         end_timestamp_opt: search_request.end_timestamp,
         aggregation,
+        fast_filter_range: None,
     })
 }
 
@@ -474,6 +550,8 @@ pub fn make_merge_collector(search_request: &SearchRequest) -> crate::Result<Qui
         start_timestamp_opt: search_request.start_timestamp,
         end_timestamp_opt: search_request.end_timestamp,
         aggregation,
+
+        fast_filter_range: None,
     })
 }
 

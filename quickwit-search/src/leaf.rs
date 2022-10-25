@@ -257,6 +257,7 @@ async fn warm_up_fastfields(
 
         fast_fields.push((fast_field, cardinality));
     }
+    info!("warmup fast fields is:{:?}", fast_fields);
 
     type SendableFuture = dyn Future<Output = Result<OwnedBytes, AsyncIoError>> + Send;
     let mut warm_up_futures: Vec<Pin<Box<SendableFuture>>> = Vec::new();
@@ -310,13 +311,26 @@ async fn leaf_search_single_split(
     let split_id = split.split_id.to_string();
     let index = open_index(storage, &split).await?;
     let split_schema = index.schema();
-    let quickwit_collector = make_collector_for_split(
+
+    let mut quickwit_collector = make_collector_for_split(
         split_id.clone(),
         doc_mapper.as_ref(),
         search_request,
         &split_schema,
     )?;
-    let query = doc_mapper.query(split_schema, search_request)?;
+
+    info!("Call query with range");
+    let (query, range_v) = doc_mapper.query_with_range(split_schema, search_request)?;
+
+    if let Some(v) = range_v {
+        let range_fields = quickwit_collector.add_range_filters(v);
+        let set = &mut quickwit_collector.fast_field_names;
+        // Used for warmup, then we will get fast field value faster
+        for field in range_fields {
+            set.insert(field);
+        }
+    }
+
     let reader = index
         .reader_builder()
         .num_searchers(1)
@@ -360,14 +374,17 @@ pub async fn leaf_search(
             let doc_mapper_clone = doc_mapper.clone();
             let index_storage_clone = index_storage.clone();
             async move {
-                leaf_search_single_split(
+                let now = std::time::Instant::now();
+                let r = leaf_search_single_split(
                     request,
                     index_storage_clone,
                     split.clone(),
                     doc_mapper_clone,
                 )
                 .await
-                .map_err(|err| (split.split_id.clone(), err))
+                .map_err(|err| (split.split_id.clone(), err));
+                info!("leaf search cost time is:{:?}", now.elapsed().as_millis());
+                r
             }
         })
         .collect();
