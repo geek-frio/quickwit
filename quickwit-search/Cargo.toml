@@ -40,13 +40,13 @@ quickwit-storage = { version = "0.3.1", path = "../quickwit-storage" }
 rayon = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
-tantivy = { git = "https://gitlab.91jkys.com/middlewares/log-platform-group/tantivy.git", branch = "for-quickwit", default-features = false, features = [
+tantivy = { git = "ssh://git@gitlab.91jkys.com/middlewares/log-platform-group/tantivy.git", branch = "for-quickwit", default-features = false, features = [
     "mmap",
     "lz4-compression",
     "zstd-compression",
     "quickwit"
 ]}
-tantivy-query-grammar = { git = "https://gitlab.91jkys.com/middlewares/log-platform-group/tantivy.git", branch = "for-quickwit" }
+tantivy-query-grammar = { git = "ssh://git@gitlab.91jkys.com/middlewares/log-platform-group/tantivy.git", branch = "for-quickwit" }
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
