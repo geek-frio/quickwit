@@ -29,6 +29,7 @@ use tracing::info;
 pub mod actors;
 mod garbage_collection;
 mod janitor_service;
+mod metrics;
 mod retention_policy_execution;
 
 pub use janitor_service::JanitorService;
