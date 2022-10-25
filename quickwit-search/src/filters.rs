@@ -32,6 +32,64 @@ pub struct TimestampFilter {
     timestamp_field_reader: DynamicFastFieldReader<i64>,
 }
 
+pub struct MultipleFieldFilter {
+    ranges: Vec<(Bound<i64>, Bound<i64>)>,
+    readers: Vec<DynamicFastFieldReader<i64>>,
+}
+
+impl MultipleFieldFilter {
+    pub fn new(
+        field_names: Vec<String>,
+        ranges: Vec<(Bound<i64>, Bound<i64>)>,
+        segment_reader: &SegmentReader,
+    ) -> tantivy::Result<Option<Self>> {
+        let mut readers = Vec::new();
+        let mut final_ranges = Vec::new();
+        for (field_name, (b1, b2)) in field_names.into_iter().zip(ranges.into_iter()) {
+            if let Some(field) = segment_reader.schema().get_field(&field_name) {
+                let field_entry = segment_reader.schema().get_field_entry(field.clone());
+                let expected_type = Type::I64;
+                let field_schema_type = field_entry.field_type().value_type();
+                if expected_type != field_schema_type {
+                    return Err(TantivyError::SchemaError(format!(
+                        "Field {:?} is of type {:?}!={:?}",
+                        field_entry.name(),
+                        expected_type,
+                        field_schema_type
+                    )));
+                }
+
+                let reader = segment_reader.fast_fields().i64(field)?;
+                readers.push(reader);
+                final_ranges.push((b1, b2));
+            }
+        }
+
+        if final_ranges.len() > 0 {
+            tracing::info!("Final ranges is:{:?}", final_ranges);
+            tantivy::Result::Ok(Some(MultipleFieldFilter {
+                ranges: final_ranges,
+                readers,
+            }))
+        } else {
+            tracing::error!("Can not find range field");
+            tantivy::Result::Err(tantivy::TantivyError::SchemaError(
+                "Can not find range field".to_string(),
+            ))
+        }
+    }
+
+    pub fn is_within_range(&self, doc_id: DocId) -> bool {
+        for (bound_range, reader) in self.ranges.iter().zip(self.readers.iter()).into_iter() {
+            let val = reader.get(doc_id);
+            if !bound_range.contains(&val) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 impl TimestampFilter {
     pub fn new(
         field: Field,

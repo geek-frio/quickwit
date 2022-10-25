@@ -26,13 +26,14 @@ use serde_json::{self, Value as JsonValue};
 use tantivy::query::Query;
 use tantivy::schema::{Cardinality, Field, FieldType, Schema, STORED};
 use tantivy::Document;
+use tantivy_query_grammar::{Occur, UserInputAst};
 use tracing::info;
 
 use super::field_mapping_entry::QuickwitTextTokenizer;
 use super::DefaultDocMapperBuilder;
 use crate::default_doc_mapper::mapping_tree::{build_mapping_tree, MappingNode, MappingTree};
 pub use crate::default_doc_mapper::QuickwitJsonOptions;
-use crate::query_builder::build_query;
+use crate::query_builder::{build_query, build_query_with_range};
 use crate::sort_by::{validate_sort_by_field_name, SortBy, SortOrder};
 use crate::{
     DocMapper, DocParsingError, ModeType, QueryParserError, DYNAMIC_FIELD_NAME, SOURCE_FIELD_NAME,
@@ -485,6 +486,20 @@ impl DocMapper for DefaultDocMapper {
             }
         }
         build_query(split_schema, request, &tantivy_default_search_field_names)
+    }
+
+    fn query_with_range(
+        &self,
+        split_schema: Schema,
+        request: &SearchRequest,
+    ) -> Result<(Box<dyn Query>, Option<Vec<(Occur, UserInputAst)>>), QueryParserError> {
+        let mut tantivy_default_search_field_names = self.default_search_field_names.clone();
+        if let Mode::Dynamic(default_mapping_options) = &self.mode {
+            if default_mapping_options.indexed {
+                tantivy_default_search_field_names.push(DYNAMIC_FIELD_NAME.to_string());
+            }
+        }
+        build_query_with_range(split_schema, request, &tantivy_default_search_field_names)
     }
 
     fn schema(&self) -> Schema {

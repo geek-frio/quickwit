@@ -26,6 +26,7 @@ use serde_json::Value as JsonValue;
 use tantivy::query::Query;
 use tantivy::schema::{Field, Schema};
 use tantivy::Document;
+use tantivy_query_grammar::{Occur, UserInputAst};
 
 use crate::{DocParsingError, QueryParserError, SortBy};
 
@@ -74,6 +75,14 @@ pub trait DocMapper: Send + Sync + Debug + DynClone + 'static {
         split_schema: Schema,
         request: &SearchRequest,
     ) -> Result<Box<dyn Query>, QueryParserError>;
+
+    /// Returns the query and range field
+    /// Returned range fields is used for building collector
+    fn query_with_range(
+        &self,
+        split_schema: Schema,
+        request: &SearchRequest,
+    ) -> Result<(Box<dyn Query>, Option<Vec<(Occur, UserInputAst)>>), QueryParserError>;
 
     /// Returns the default sort
     fn sort_by(&self) -> SortBy {
