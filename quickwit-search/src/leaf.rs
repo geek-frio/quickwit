@@ -319,7 +319,6 @@ async fn leaf_search_single_split(
         &split_schema,
     )?;
 
-    info!("Call query with range");
     let (query, range_v) = doc_mapper.query_with_range(split_schema, search_request)?;
 
     if let Some(v) = range_v {
