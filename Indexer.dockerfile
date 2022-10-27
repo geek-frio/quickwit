@@ -2,7 +2,7 @@ FROM reg.qa.91jkys.com/lang/rust-ci:10.19 as builder
 
 ARG CARGO_FEATURES=quickwit-metastore/postgres,openssl-support
 
-ARG SCCACHE_REDIS
+ARG SCCACHE_REDIS RUSTC_WRAPPER=sccache
 
 COPY . ./quickwit
 
