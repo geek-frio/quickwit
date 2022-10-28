@@ -11,6 +11,10 @@
         "quickwit-searcher-0.local",
         "quickwit-searcher-1.local"
     ],
+    "enabled_services": [
+        "janitor",
+        "metastore"
+    ],
     "indexer": {
         "split_store_max_num_bytes": "1T",
         "split_store_max_num_splits": 10000,

@@ -17,14 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{bail, Context};
 use byte_unit::Byte;
-use derivative::Derivative;
 use json_comments::StripComments;
 use quickwit_common::net::{find_private_ip, Host, HostAddr};
 use quickwit_common::new_coolid;
@@ -32,18 +32,46 @@ use quickwit_common::uri::{Extension, Uri};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::config_value::ConfigValue;
+use crate::qw_env_vars::*;
 use crate::service::QuickwitService;
 use crate::templating::render_config;
 use crate::validate_identifier;
 
-pub const DEFAULT_QW_CONFIG_PATH: &str = "./config/quickwit.yaml";
+pub const DEFAULT_QW_CONFIG_PATH: &str = "config/quickwit.yaml";
 
-const DEFAULT_DATA_DIR_PATH: &str = "./qwdata";
+pub const DEFAULT_CLUSTER_ID: &str = "quickwit-default-cluster";
 
-const DEFAULT_CLUSTER_ID: &str = "quickwit-default-cluster";
+pub const DEFAULT_DATA_DIR_PATH: &str = "qwdata";
 
-fn default_data_dir_path() -> PathBuf {
-    PathBuf::from(DEFAULT_DATA_DIR_PATH)
+// Default config values in the order they appear in [`QuickwitConfigBuilder`].
+fn default_cluster_id() -> ConfigValue<String, QW_CLUSTER_ID> {
+    ConfigValue::new(DEFAULT_CLUSTER_ID.to_string())
+}
+
+fn default_node_id() -> ConfigValue<String, QW_NODE_ID> {
+    ConfigValue::new(new_coolid("node"))
+}
+
+fn default_enabled_services() -> ConfigValue<List, QW_ENABLED_SERVICES> {
+    ConfigValue::new(List(
+        QuickwitService::supported_services()
+            .into_iter()
+            .map(|service| service.to_string())
+            .collect(),
+    ))
+}
+
+fn default_listen_address() -> ConfigValue<String, QW_LISTEN_ADDRESS> {
+    ConfigValue::new(Host::default().to_string())
+}
+
+fn default_rest_listen_port() -> ConfigValue<u16, QW_REST_LISTEN_PORT> {
+    ConfigValue::new(7280)
+}
+
+fn default_data_dir_uri() -> ConfigValue<Uri, QW_DATA_DIR> {
+    ConfigValue::new(Uri::try_new(DEFAULT_DATA_DIR_PATH).)
 }
 
 // Surprisingly, the default metastore and the index root uri are the same (if you exclude the
@@ -52,38 +80,13 @@ fn default_data_dir_path() -> PathBuf {
 // For a given index `index-id`, it means that we have the metastore file
 // in  `./qwdata/indexes/{index-id}/metastore.json` and splits in
 // dir `./qwdata/indexes/{index-id}/splits`.
-fn default_metastore_uri(data_dir_path: &Path) -> Uri {
-    Uri::try_new(&data_dir_path.join("indexes#polling_interval=30s").to_string_lossy())
-        .expect("Failed to create default metastore URI. This should never happen! Please, report on https://github.com/quickwit-oss/quickwit/issues.")
+fn default_metastore_uri(data_dir_uri: &Uri) -> Uri {
+    data_dir_uri.join("indexes#polling_interval=30s").expect("Failed to create default metastore URI. This should never happen! Please, report on https://github.com/quickwit-oss/quickwit/issues.")
 }
 
 // See comment above.
-fn default_index_root_uri(data_dir_path: &Path) -> Uri {
-    Uri::try_new(&data_dir_path.join("indexes").to_string_lossy())
-        .expect("Failed to create default index_root URI. This should never happen! Please, report on https://github.com/quickwit-oss/quickwit/issues.")
-}
-
-fn default_cluster_id() -> String {
-    DEFAULT_CLUSTER_ID.to_string()
-}
-
-fn default_node_id() -> String {
-    new_coolid("node")
-}
-
-fn default_listen_address() -> String {
-    Host::default().to_string()
-}
-
-fn default_rest_listen_port() -> u16 {
-    7280
-}
-
-fn default_quickwit_services() -> Vec<String> {
-    ["metastore", "searcher", "indexer", "janitor"]
-        .iter()
-        .map(|svc| svc.to_string())
-        .collect()
+fn default_index_root_uri(data_dir_uri: &Uri) -> Uri {
+    data_dir_uri.join("indexes").expect("Failed to create default index root URI. This should never happen! Please, report on https://github.com/quickwit-oss/quickwit/issues.")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -190,36 +193,48 @@ impl Default for SearcherConfig {
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+struct List(Vec<String>);
+
+impl FromStr for List {
+    type Err = anyhow::Error;
+
+    fn from_str(list_str: &str) -> Result<Self, Self::Err> {
+        let list = list_str
+            .split(',')
+            .map(|elem| elem.trim().to_string())
+            .filter(|elem| !elem.is_empty())
+            .collect();
+        Ok(List(list))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct QuickwitConfigBuilder {
-    version: usize,
+    version: ConfigValue<usize, QW_NONE>,
     #[serde(default = "default_cluster_id")]
-    cluster_id: String,
+    cluster_id: ConfigValue<String, QW_CLUSTER_ID>,
     #[serde(default = "default_node_id")]
-    node_id: String,
+    node_id: ConfigValue<String, QW_NODE_ID>,
+    #[serde(default = "default_enabled_services")]
+    enabled_services: ConfigValue<List, QW_ENABLED_SERVICES>,
     #[serde(default = "default_listen_address")]
-    listen_address: String,
+    listen_address: ConfigValue<String, QW_LISTEN_ADDRESS>,
     advertise_address: Option<String>,
     #[serde(default = "default_rest_listen_port")]
-    rest_listen_port: u16,
-    #[serde(default = "default_quickwit_services")]
-    enabled_services: Vec<String>,
-    gossip_listen_port: Option<u16>,
-    grpc_listen_port: Option<u16>,
+    rest_listen_port: ConfigValue<u16, QW_REST_LISTEN_PORT>,
+    gossip_listen_port: Option<ConfigValue<u16, QW_GOSSIP_LISTEN_PORT>>,
+    grpc_listen_port: Option<ConfigValue<u16, QW_GRPC_LISTEN_PORT>>,
     #[serde(default)]
-    peer_seeds: Vec<String>,
-    #[serde(default)]
-    #[derivative(Debug(format_with = "redact_uri"))]
-    metastore_uri: Option<String>,
-    #[serde(default)]
-    #[derivative(Debug(format_with = "redact_uri"))]
-    default_index_root_uri: Option<String>,
+    peer_seeds: ConfigValue<List, QW_PEER_SEEDS>,
     #[serde(default = "default_data_dir_path")]
     #[serde(rename = "data_dir")]
-    data_dir_path: PathBuf,
+    data_dir_uri: ConfigValue<Uri, QW_DATA_DIR>,
+    #[serde(default)]
+    metastore_uri: ConfigValue<Option<Uri>, QW_METASTORE_URI>,
+    #[serde(default)]
+    default_index_root_uri: ConfigValue<Option<Uri>, QW_DEFAULT_ROOT_INDEX_URI>,
     #[serde(rename = "indexer")]
     #[serde(default)]
     indexer_config: IndexerConfig,
@@ -264,33 +279,33 @@ impl QuickwitConfigBuilder {
         serde_yaml::from_slice(bytes).context("Failed to parse YAML config file.")
     }
 
-    fn parse_services(&self) -> anyhow::Result<HashSet<QuickwitService>> {
-        self.enabled_services
-            .iter()
-            .map(|service_string| service_string.parse())
-            .collect::<Result<HashSet<_>, _>>()
-    }
+    // fn parse_services(&self) -> anyhow::Result<HashSet<QuickwitService>> {
+    //     self.enabled_services
+    //         .iter()
+    //         .map(|service_string| service_string.parse())
+    //         .collect::<Result<HashSet<_>, _>>()
+    // }
 
-    /// Returns the REST listen address of the node, i.e. the socket address on which the REST API
-    /// service listens for TCP connections.
-    async fn rest_listen_addr(&self, listen_host: &Host) -> anyhow::Result<SocketAddr> {
-        listen_host.with_port(self.rest_listen_port).resolve().await
-    }
+    // /// Returns the REST listen address of the node, i.e. the socket address on which the REST
+    // API /// service listens for TCP connections.
+    // async fn rest_listen_addr(&self, listen_host: &Host) -> anyhow::Result<SocketAddr> {
+    //     listen_host.with_port(self.rest_listen_port).resolve().await
+    // }
 
-    /// Returns the gRPC listen port of the node.
-    /// Extracted from the config if specified or computed as `rest_listen_port + 1` otherwise.
-    fn grpc_listen_port(&self) -> u16 {
-        self.grpc_listen_port.unwrap_or(self.rest_listen_port + 1)
-    }
+    // /// Returns the gRPC listen port of the node.
+    // /// Extracted from the config if specified or computed as `rest_listen_port + 1` otherwise.
+    // fn grpc_listen_port(&self) -> u16 {
+    //     self.grpc_listen_port.unwrap_or(self.rest_listen_port + 1)
+    // }
 
-    /// Returns the gRPC listen address of the node, i.e. the socket address on which the gRPC
-    /// service listens for TCP connections.
-    async fn grpc_listen_addr(&self, listen_host: &Host) -> anyhow::Result<SocketAddr> {
-        listen_host
-            .with_port(self.grpc_listen_port())
-            .resolve()
-            .await
-    }
+    // /// Returns the gRPC listen address of the node, i.e. the socket address on which the gRPC
+    // /// service listens for TCP connections.
+    // async fn grpc_listen_addr(&self, listen_host: &Host) -> anyhow::Result<SocketAddr> {
+    //     listen_host
+    //         .with_port(self.grpc_listen_port())
+    //         .resolve()
+    //         .await
+    // }
 
     /// Returns the advertise
     fn advertise_addr(&self, listen_host: &Host) -> anyhow::Result<Host> {
@@ -330,103 +345,132 @@ impl QuickwitConfigBuilder {
         Ok(listen_host.clone())
     }
 
-    /// Returns the gRPC public address of the node, i.e. the socket address to connect to in order
-    /// to send gRPC requests to the node.
-    async fn grpc_advertise_addr(&self, listen_host: &Host) -> anyhow::Result<SocketAddr> {
-        self.advertise_addr(listen_host)?
-            .with_port(self.grpc_listen_port())
-            .resolve()
-            .await
-    }
+    // /// Returns the gRPC public address of the node, i.e. the socket address to connect to in
+    // order /// to send gRPC requests to the node.
+    // async fn grpc_advertise_addr(&self, listen_host: &Host) -> anyhow::Result<SocketAddr> {
+    //     self.advertise_addr(listen_host)?
+    //         .with_port(self.grpc_listen_port())
+    //         .resolve()
+    //         .await
+    // }
 
-    /// Returns the gossip listen port of the node (UDP).
-    /// Extracted from the config if specified or same as `rest_listen_port` otherwise.
-    fn gossip_listen_port(&self) -> u16 {
-        // By default, we use the same port number as the REST port but UDP this time.
-        self.gossip_listen_port.unwrap_or(self.rest_listen_port)
-    }
+    // /// Returns the gossip listen port of the node (UDP).
+    // /// Extracted from the config if specified or same as `rest_listen_port` otherwise.
+    // fn gossip_listen_port(&self) -> u16 {
+    //     // By default, we use the same port number as the REST port but UDP this time.
+    //     self.gossip_listen_port.unwrap_or(self.rest_listen_port)
+    // }
 
-    /// Returns the gossip listen address of the node, i.e. the UDP socket address on which the node
-    /// receives gossip messages.
-    async fn gossip_listen_addr(&self, listen_addr: &Host) -> anyhow::Result<SocketAddr> {
-        listen_addr
-            .with_port(self.gossip_listen_port())
-            .resolve()
-            .await
-    }
+    // /// Returns the gossip listen address of the node, i.e. the UDP socket address on which the
+    // node /// receives gossip messages.
+    // async fn gossip_listen_addr(&self, listen_addr: &Host) -> anyhow::Result<SocketAddr> {
+    //     listen_addr
+    //         .with_port(self.gossip_listen_port())
+    //         .resolve()
+    //         .await
+    // }
 
-    /// Returns the gossip public address of the node, i.e. the socket address to send UDP packets
-    /// to in order to gossip with the node.
-    async fn gossip_advertise_addr(&self, listen_host: &Host) -> anyhow::Result<SocketAddr> {
-        self.advertise_addr(listen_host)?
-            .with_port(self.gossip_listen_port())
-            .resolve()
-            .await
-    }
+    // /// Returns the gossip public address of the node, i.e. the socket address to send UDP
+    // packets /// to in order to gossip with the node.
+    // async fn gossip_advertise_addr(&self, listen_host: &Host) -> anyhow::Result<SocketAddr> {
+    //     self.advertise_addr(listen_host)?
+    //         .with_port(self.gossip_listen_port())
+    //         .resolve()
+    //         .await
+    // }
 
-    fn metastore_uri(&self) -> anyhow::Result<Uri> {
-        if let Some(uri) = &self.metastore_uri {
-            Uri::try_new(uri).with_context(|| format!("Failed to parse metastore URI `{uri}`."))
-        } else {
-            Ok(default_metastore_uri(&self.data_dir_path))
-        }
-    }
+    // fn default_index_root_uri(&self) -> anyhow::Result<Uri> {
+    //     if let Some(uri) = &self.default_index_root_uri {
+    //         Uri::try_new(uri)
+    //             .with_context(|| format!("Failed to parse default index root URI `{uri}`."))
+    //     } else {
+    //         Ok(default_index_root_uri(&self.data_dir_path))
+    //     }
+    // }
 
-    fn default_index_root_uri(&self) -> anyhow::Result<Uri> {
-        if let Some(uri) = &self.default_index_root_uri {
-            Uri::try_new(uri)
-                .with_context(|| format!("Failed to parse default index root URI `{uri}`."))
-        } else {
-            Ok(default_index_root_uri(&self.data_dir_path))
-        }
-    }
+    // fn data_dir_path(&self) -> anyhow::Result<PathBuf> {
+    //     let data_dir_uri = Uri::try_new(&self.data_dir_path.to_string_lossy())
+    //         .expect("Failed to create URI from data_dir.");
+    //     match data_dir_uri.filepath() {
+    //         Some(path) => Ok(path.to_path_buf()),
+    //         _ => bail!("Only `file://` protocol allowed for data_dir `{data_dir_uri}`."),
+    //     }
+    // }
 
-    fn data_dir_path(&self) -> anyhow::Result<PathBuf> {
-        let data_dir_uri = Uri::try_new(&self.data_dir_path.to_string_lossy())
-            .expect("Failed to create URI from data_dir.");
-        match data_dir_uri.filepath() {
-            Some(path) => Ok(path.to_path_buf()),
-            _ => bail!("Only `file://` protocol allowed for data_dir `{data_dir_uri}`."),
-        }
-    }
+    pub async fn build(self, env_vars: &HashMap<String, String>) -> anyhow::Result<QuickwitConfig> {
+        let listen_address = self.listen_address.resolve(&env_vars)?;
+        let listen_host = listen_address.parse::<Host>()?;
+        let listen_ip = listen_host.resolve().await?;
 
-    pub async fn build(self) -> anyhow::Result<QuickwitConfig> {
-        let listen_host = self.listen_address.parse::<Host>()?;
+        let rest_listen_port = self.rest_listen_port.resolve(&env_vars)?;
+        let rest_listen_addr = SocketAddr::new(listen_ip, rest_listen_port);
+
+        let gossip_listen_port = self
+            .gossip_listen_port
+            .map(|port| port.resolve(&env_vars))
+            .transpose()?
+            .unwrap_or(rest_listen_port);
+        let gossip_listen_addr = SocketAddr::new(listen_ip, gossip_listen_port);
+
+        let grpc_listen_port = self
+            .grpc_listen_port
+            .map(|port| port.resolve(&env_vars))
+            .transpose()?
+            .unwrap_or(rest_listen_port + 1);
+        let grpc_listen_addr = SocketAddr::new(listen_ip, grpc_listen_port);
+
+        // let advertise_address = self.listen_address.resolve(&env_vars)?;
+        // let advertise_host = listen_address.parse::<Host>()?;
+        let advertise_ip = listen_ip;
+        let gossip_advertise_addr = SocketAddr::new(advertise_ip, gossip_listen_port);
+        let grpc_advertise_addr = SocketAddr::new(advertise_ip, grpc_listen_port);
+
+        let enabled_services = self
+            .enabled_services
+            .resolve(&env_vars)?
+            .0
+            .into_iter()
+            .map(|service| service.parse())
+            .collect::<Result<_, _>>()?;
+
+        let data_dir_path = self.data_dir_path.resolve(&env_vars)?;
+        let data_dir_uri = Uri::try_new(&data_dir_path.to_string_lossy())
+            .with_context(|| format!("Failed to parse data dir: `{}`.", data_dir_path.display()))?;
+        let data_dir_path = data_dir_uri
+            .filepath()
+            .with_context(|| format!(""))?
+            .to_path_buf();
+
+        let metastore_uri = self
+            .metastore_uri
+            .map(|uri| uri.resolve(&env_vars))
+            .transpose()?
+            .unwrap_or_else(|| default_metastore_uri(&data_dir_uri));
+
+        let default_index_root_uri = self
+            .default_index_root_uri
+            .map(|uri| uri.resolve(&env_vars))
+            .transpose()?
+            .unwrap_or_else(|| default_index_root_uri(&data_dir_uri));
 
         Ok(QuickwitConfig {
-            rest_listen_addr: self.rest_listen_addr(&listen_host).await?,
-            gossip_listen_addr: self.gossip_listen_addr(&listen_host).await?,
-            grpc_listen_addr: self.grpc_listen_addr(&listen_host).await?,
-            gossip_advertise_addr: self.gossip_advertise_addr(&listen_host).await?,
-            grpc_advertise_addr: self.grpc_advertise_addr(&listen_host).await?,
-            metastore_uri: self.metastore_uri()?,
-            default_index_root_uri: self.default_index_root_uri()?,
-            enabled_services: self.parse_services()?,
-            data_dir_path: self.data_dir_path()?,
-            version: self.version,
-            cluster_id: self.cluster_id,
-            node_id: self.node_id,
-            peer_seeds: self.peer_seeds,
+            version: self.version.resolve(&env_vars)?,
+            cluster_id: self.cluster_id.resolve(&env_vars)?,
+            node_id: self.node_id.resolve(&env_vars)?,
+            enabled_services,
+            rest_listen_addr,
+            gossip_listen_addr,
+            grpc_listen_addr,
+            gossip_advertise_addr,
+            grpc_advertise_addr,
+            peer_seeds: self.peer_seeds.resolve(&env_vars)?.0,
+            data_dir_path,
+            metastore_uri,
+            default_index_root_uri,
             indexer_config: self.indexer_config,
             searcher_config: self.searcher_config,
         })
     }
-}
-
-fn redact_uri(
-    uri_opt: &Option<String>,
-    formatter: &mut std::fmt::Formatter,
-) -> Result<(), std::fmt::Error> {
-    match uri_opt.as_ref().map(|uri| Uri::try_new(uri)) {
-        Some(Ok(uri)) => {
-            formatter.write_str("Some(")?;
-            formatter.write_str(&uri.as_redacted_str())?;
-            formatter.write_str(")")?;
-        }
-        Some(Err(_)) => formatter.write_str("Some(***redacted***)")?,
-        None => formatter.write_str("None")?,
-    };
-    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -434,16 +478,16 @@ pub struct QuickwitConfig {
     pub version: usize,
     pub cluster_id: String,
     pub node_id: String,
+    pub enabled_services: HashSet<QuickwitService>,
     pub rest_listen_addr: SocketAddr,
     pub gossip_listen_addr: SocketAddr,
     pub grpc_listen_addr: SocketAddr,
     pub gossip_advertise_addr: SocketAddr,
     pub grpc_advertise_addr: SocketAddr,
-    pub enabled_services: HashSet<QuickwitService>,
     pub peer_seeds: Vec<String>,
+    pub data_dir_path: PathBuf,
     pub metastore_uri: Uri,
     pub default_index_root_uri: Uri,
-    pub data_dir_path: PathBuf,
     pub indexer_config: IndexerConfig,
     pub searcher_config: SearcherConfig,
 }
@@ -453,17 +497,11 @@ impl QuickwitConfig {
     pub async fn load(
         uri: &Uri,
         config_content: &[u8],
-        data_dir_path_opt: Option<PathBuf>,
+        _data_dir_path_opt: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        let mut config_builder = QuickwitConfigBuilder::from_uri(uri, config_content).await?;
-        if let Some(data_dir_path) = data_dir_path_opt {
-            info!(
-                data_dir_path = %data_dir_path.display(),
-                "Setting data dir path from CLI args or environment variable",
-            );
-            config_builder.data_dir_path = data_dir_path;
-        }
-        let config = config_builder.build().await?;
+        let config_builder = QuickwitConfigBuilder::from_uri(uri, config_content).await?;
+        let env_vars = env::vars().collect::<HashMap<_, _>>();
+        let config = config_builder.build(&env_vars).await?;
         config.validate()?;
         Ok(config)
     }
@@ -526,6 +564,8 @@ impl QuickwitConfig {
 
     #[cfg(any(test, feature = "testsuite"))]
     pub fn for_test() -> Self {
+        let enabled_services = QuickwitService::supported_services();
+
         let listen_address = Host::default();
         let rest_listen_port = quickwit_common::net::find_available_tcp_port()
             .expect("The OS should almost always find an available port.");
@@ -544,30 +584,26 @@ impl QuickwitConfig {
             .to_socket_addr()
             .expect("The default host should be an IP address.");
 
-        let data_dir_path = PathBuf::from(DEFAULT_DATA_DIR_PATH);
-        let metastore_uri = default_metastore_uri(&data_dir_path);
-        let default_index_root_uri = default_index_root_uri(&data_dir_path);
-
-        let services = default_quickwit_services()
-            .iter()
-            .map(|svc| svc.parse())
-            .collect::<anyhow::Result<_>>()
-            .expect("Default services should be parsed correctly.");
+        let data_dir_path = default_data_dir_path().value;
+        let data_dir_uri = Uri::try_new(DEFAULT_DATA_DIR_PATH)
+            .expect("The default data dir path should be a valid URI.");
+        let metastore_uri = default_metastore_uri(&data_dir_uri);
+        let default_index_root_uri = default_index_root_uri(&data_dir_uri);
 
         Self {
             version: 0,
-            cluster_id: default_cluster_id(),
-            node_id: default_node_id(),
+            cluster_id: default_cluster_id().value,
+            node_id: default_node_id().value,
+            enabled_services,
             gossip_advertise_addr: gossip_listen_addr,
             grpc_advertise_addr: grpc_listen_addr,
             rest_listen_addr,
-            enabled_services: services,
             gossip_listen_addr,
             grpc_listen_addr,
             peer_seeds: Vec::new(),
+            data_dir_path,
             metastore_uri,
             default_index_root_uri,
-            data_dir_path,
             indexer_config: IndexerConfig::default(),
             searcher_config: SearcherConfig::default(),
         }
@@ -584,19 +620,19 @@ mod tests {
     impl Default for QuickwitConfigBuilder {
         fn default() -> Self {
             Self {
-                version: 0,
+                version: ConfigValue::default(),
                 cluster_id: default_cluster_id(),
                 node_id: default_node_id(),
-                listen_address: Host::default().to_string(),
-                advertise_address: None,
+                enabled_services: default_enabled_services(),
+                listen_address: default_listen_address(),
                 rest_listen_port: default_rest_listen_port(),
-                enabled_services: default_quickwit_services(),
                 gossip_listen_port: None,
                 grpc_listen_port: None,
-                peer_seeds: Vec::new(),
+                advertise_address: None,
+                peer_seeds: ConfigValue::default(),
                 metastore_uri: None,
                 default_index_root_uri: None,
-                data_dir_path: PathBuf::from(DEFAULT_DATA_DIR_PATH),
+                data_dir_path: default_data_dir_path(),
                 indexer_config: IndexerConfig::default(),
                 searcher_config: SearcherConfig::default(),
             }
@@ -621,7 +657,7 @@ mod tests {
                 let file = std::fs::read_to_string(&config_filepath).unwrap();
                 let config = QuickwitConfigBuilder::from_uri(&config_uri, file.as_bytes())
                     .await?
-                    .build()
+                    .build(&HashMap::new())
                     .await?;
                 assert_eq!(config.version, 0);
                 assert_eq!(config.cluster_id, "quickwit-cluster");
@@ -636,6 +672,11 @@ mod tests {
                         "quickwit-searcher-1.local".to_string()
                     ]
                 );
+                assert_eq!(config.enabled_services.len(), 2);
+                assert!(config.enabled_services.contains(&QuickwitService::Janitor));
+                assert!(config
+                    .enabled_services
+                    .contains(&QuickwitService::Metastore));
                 assert_eq!(
                     config.metastore_uri,
                     "postgres://username:password@host:port/db"
@@ -699,9 +740,14 @@ mod tests {
     async fn test_quickwit_config_default_values_minimal() {
         let config_yaml = "version: 0";
         let config_builder = serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap();
-        let config = config_builder.build().await.unwrap();
+        let config = config_builder.build(&HashMap::new()).await.unwrap();
         assert_eq!(config.version, 0);
+        assert_eq!(config.cluster_id, DEFAULT_CLUSTER_ID);
         assert!(config.node_id.starts_with("node-"));
+        assert_eq!(
+            config.enabled_services,
+            QuickwitService::supported_services()
+        );
         assert_eq!(
             config.metastore_uri,
             format!(
@@ -723,7 +769,7 @@ mod tests {
             metastore_uri: postgres://username:password@host:port/db
         "#;
         let config_builder = serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap();
-        let config = config_builder.build().await.unwrap();
+        let config = config_builder.build(&HashMap::new()).await.unwrap();
         assert_eq!(config.version, 0);
         assert_eq!(config.cluster_id, DEFAULT_CLUSTER_ID);
         assert_eq!(config.node_id, "1");
@@ -741,7 +787,7 @@ mod tests {
             data_dir: /opt/quickwit/data
         "#;
         let config_builder = serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap();
-        let config = config_builder.build().await.unwrap();
+        let config = config_builder.build(&HashMap::new()).await.unwrap();
         assert_eq!(config.version, 0);
         assert_eq!(
             config.metastore_uri,
@@ -768,38 +814,38 @@ mod tests {
     async fn test_peer_socket_addrs() {
         {
             let quickwit_config = QuickwitConfigBuilder {
-                rest_listen_port: 1789,
+                rest_listen_port: ConfigValue::new(1789),
                 ..Default::default()
             }
-            .build()
+            .build(&HashMap::new())
             .await
             .unwrap();
             assert!(quickwit_config.peer_seed_addrs().await.unwrap().is_empty());
         }
         {
             let quickwit_config = QuickwitConfigBuilder {
-                rest_listen_port: 1789,
-                peer_seeds: vec!["unresolvable-host".to_string()],
+                rest_listen_port: ConfigValue::new(1789),
+                peer_seeds: ConfigValue::new(List(vec!["unresolvable-host".to_string()])),
                 ..Default::default()
             }
-            .build()
+            .build(&HashMap::new())
             .await
             .unwrap();
             assert!(quickwit_config.peer_seed_addrs().await.is_err());
         }
         {
             let quickwit_config = QuickwitConfigBuilder {
-                rest_listen_port: 1789,
-                peer_seeds: vec![
+                rest_listen_port: ConfigValue::new(1789),
+                peer_seeds: ConfigValue::new(List(vec![
                     "unresolvable-host".to_string(),
                     "localhost".to_string(),
                     "localhost:1337".to_string(),
                     "127.0.0.1".to_string(),
                     "127.0.0.1:1337".to_string(),
-                ],
+                ])),
                 ..Default::default()
             }
-            .build()
+            .build(&HashMap::new())
             .await
             .unwrap();
             assert_eq!(
@@ -818,10 +864,10 @@ mod tests {
     async fn test_socket_addr_ports() {
         {
             let quickwit_config = QuickwitConfigBuilder {
-                listen_address: Ipv4Addr::LOCALHOST.to_string(),
+                listen_address: default_listen_address(),
                 ..Default::default()
             }
-            .build()
+            .build(&HashMap::new())
             .await
             .unwrap();
             assert_eq!(
@@ -839,11 +885,11 @@ mod tests {
         }
         {
             let quickwit_config = QuickwitConfigBuilder {
-                listen_address: Ipv4Addr::LOCALHOST.to_string(),
-                rest_listen_port: 1789,
+                listen_address: default_listen_address(),
+                rest_listen_port: ConfigValue::new(1789),
                 ..Default::default()
             }
-            .build()
+            .build(&HashMap::new())
             .await
             .unwrap();
             assert_eq!(
@@ -861,13 +907,13 @@ mod tests {
         }
         {
             let quickwit_config = QuickwitConfigBuilder {
-                listen_address: Ipv4Addr::LOCALHOST.to_string(),
-                rest_listen_port: 1789,
-                gossip_listen_port: Some(1889),
-                grpc_listen_port: Some(1989),
+                listen_address: default_listen_address(),
+                rest_listen_port: ConfigValue::new(1789),
+                gossip_listen_port: Some(ConfigValue::new(1889)),
+                grpc_listen_port: Some(ConfigValue::new(1989)),
                 ..Default::default()
             }
-            .build()
+            .build(&HashMap::new())
             .await
             .unwrap();
             assert_eq!(
@@ -904,9 +950,7 @@ mod tests {
             node_id: 1
             metastore_uri: ''
         "#;
-            let config_builder =
-                serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap();
-            config_builder.build().await.unwrap_err();
+            serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap_err();
         }
         {
             let config_yaml = r#"
@@ -915,9 +959,7 @@ mod tests {
             metastore_uri: postgres://username:password@host:port/db
             default_index_root_uri: ''
         "#;
-            let config_builder =
-                serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap();
-            config_builder.build().await.unwrap_err();
+            serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap_err();
         }
     }
 
@@ -930,7 +972,7 @@ mod tests {
             "#;
             let config_builder =
                 serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap();
-            let config = config_builder.build().await.unwrap();
+            let config = config_builder.build(&HashMap::new()).await.unwrap();
             assert_eq!(config.data_dir_path, PathBuf::from("/opt/quickwit/data"));
         }
         {
@@ -940,7 +982,7 @@ mod tests {
             "#;
             let config_builder =
                 serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap();
-            let config = config_builder.build().await.unwrap();
+            let config = config_builder.build(&HashMap::new()).await.unwrap();
             assert_eq!(config.data_dir_path, PathBuf::from("/opt/quickwit/data"));
         }
         {
@@ -950,7 +992,7 @@ mod tests {
             "#;
             let config_builder =
                 serde_yaml::from_str::<QuickwitConfigBuilder>(config_yaml).unwrap();
-            let error = config_builder.build().await.unwrap_err();
+            let error = config_builder.build(&HashMap::new()).await.unwrap_err();
             assert!(error.to_string().contains("Only `file://` protocol"));
         }
     }
