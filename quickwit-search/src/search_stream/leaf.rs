@@ -20,6 +20,7 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use futures::{FutureExt, StreamExt};
@@ -117,14 +118,16 @@ async fn leaf_search_results_stream(
 }
 
 // Aggregation query will be ignored
-async fn leaf_search_sql_stream(
+pub async fn leaf_search_sql_stream(
     request: SearchRequest,
     storage: Arc<dyn Storage>,
     splits: Vec<SplitIdAndFooterOffsets>,
     doc_mapper: Arc<dyn DocMapper>,
-) -> tokio::sync::mpsc::UnboundedReceiver<Option<LeafSearchResponse>> {
+) -> tokio::sync::mpsc::UnboundedReceiver<Result<LeafSearchResponse>> {
     let max_num_concurrent_split_streams = get_max_num_concurrent_split_streams();
     let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let split_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(splits.len()));
     let mut stream = futures::stream::iter(splits)
         .map(move |split| {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -136,6 +139,7 @@ async fn leaf_search_sql_stream(
                 tx.clone(),
             );
 
+            let split_counter = split_counter.clone();
             let stream = UnboundedReceiverStream::new(rx);
             let mut chunkstream = Box::pin(tokio_stream::StreamExt::chunks_timeout(
                 stream,
@@ -155,15 +159,25 @@ async fn leaf_search_sql_stream(
                                 num_attempted_splits: 0,
                                 intermediate_aggregation_result: None,
                             };
-                            let _ = resp_tx.send(Some(leaf_search_resp));
+                            let _ = resp_tx.send(crate::Result::Ok(leaf_search_resp));
                         }
-                        resp_tx.send(None)
+                        let cur = split_counter.fetch_sub(1, Ordering::Relaxed);
+                        if cur == 0 {
+                            let _ = resp_tx.send(crate::Result::Ok(LeafSearchResponse::default()));
+                        }
                     }
-                    Err(_e) => resp_tx.send(None),
+                    Err(_e) => {
+                        let cur = split_counter.fetch_sub(1, Ordering::Relaxed);
+                        if cur == 0 {
+                            let _ = resp_tx.send(crate::Result::Ok(LeafSearchResponse::default()));
+                        }
+                    }
                 }
             }
         })
         .buffer_unordered(max_num_concurrent_split_streams);
+
+    // Make the data iterator run
     tokio::spawn(async move {
         while let Some(_) = stream.next().await {
             // do nothing, wait collector to iterate all the records
@@ -609,6 +623,80 @@ mod tests {
             from_utf8(&res.data)?,
             format!("{}\n", filtered_timestamp_values.join("\n"))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sql_stream_search() -> anyhow::Result<()> {
+        let index_id = "single-node-sql-stream";
+        let doc_mapping_yaml = r#"
+        field_mappings:
+          - name: body
+            type: text
+          - name: u64_fast_column2
+            type: u64
+            fast: true 
+          - name: i64_column3
+            type: i64
+          - name: ts
+            type: i64
+            fast: true
+        "#;
+        let indexing_setting_yaml = r#"
+          timestamp_field: ts
+          split_num_docs_target: 100
+        "#;
+        let test_sandbox =
+            TestSandbox::create(index_id, doc_mapping_yaml, indexing_setting_yaml, &["body"])
+                .await?;
+        let mut docs = vec![];
+        for i in 0..1000 {
+            let body = format!("info @ t:{}", i + 1);
+            docs.push(json!({
+                "body": body,
+                "u64_fast_column2": i + 1,
+                "i64_column3": i + 1,
+                "ts": i + 10000
+            }));
+        }
+        test_sandbox.add_documents(docs).await?;
+
+        let splits = test_sandbox.metastore().list_all_splits(index_id).await?;
+        let splits_offsets = splits
+            .into_iter()
+            .map(|split_meta| SplitIdAndFooterOffsets {
+                split_id: split_meta.split_id().to_string(),
+                split_footer_start: split_meta.split_metadata.footer_offsets.start,
+                split_footer_end: split_meta.split_metadata.footer_offsets.end,
+            })
+            .collect();
+        let doc_mapper = test_sandbox.doc_mapper();
+        let storage = test_sandbox.storage();
+
+        let request = SearchRequest {
+            index_id: index_id.to_string(),
+            query: "info".to_string(),
+            search_fields: Vec::new(),
+            start_timestamp: None,
+            end_timestamp: Some(1000000),
+            max_hits: 1000,
+            start_offset: 0,
+            sort_order: None,
+            sort_by_field: None,
+            aggregation_request: None,
+        };
+        let mut receiver =
+            leaf_search_sql_stream(request, storage, splits_offsets, doc_mapper).await;
+        let mut batch_num = 0;
+        while let Some(data) = receiver.recv().await {
+            batch_num += 1;
+            println!(
+                "batch num is:{}, batch length:{}, batch first record is:{:?}",
+                batch_num,
+                data.partial_hits.len(),
+                data.partial_hits.get(0)
+            );
+        }
         Ok(())
     }
 

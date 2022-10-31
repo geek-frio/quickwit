@@ -452,6 +452,30 @@ pub mod search_service_client {
             );
             self.inner.server_streaming(request.into_request(), path, codec).await
         }
+        /// Perform a leaf search stream on a given set of splits.
+        /// Used for sql analyze query to stream get all the data which is matched query
+        pub async fn leaf_search_sql_stream(
+            &mut self,
+            request: impl tonic::IntoRequest<super::LeafSearchRequest>,
+        ) -> Result<
+            tonic::Response<tonic::codec::Streaming<super::LeafSearchResponse>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/quickwit.SearchService/LeafSearchSqlStream",
+            );
+            self.inner.server_streaming(request.into_request(), path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -498,6 +522,18 @@ pub mod search_service_server {
             &self,
             request: tonic::Request<super::LeafSearchStreamRequest>,
         ) -> Result<tonic::Response<Self::LeafSearchStreamStream>, tonic::Status>;
+        ///Server streaming response type for the LeafSearchSqlStream method.
+        type LeafSearchSqlStreamStream: futures_core::Stream<
+                Item = Result<super::LeafSearchResponse, tonic::Status>,
+            >
+            + Send
+            + 'static;
+        /// Perform a leaf search stream on a given set of splits.
+        /// Used for sql analyze query to stream get all the data which is matched query
+        async fn leaf_search_sql_stream(
+            &self,
+            request: tonic::Request<super::LeafSearchRequest>,
+        ) -> Result<tonic::Response<Self::LeafSearchSqlStreamStream>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct SearchServiceServer<T: SearchService> {
@@ -691,6 +727,47 @@ pub mod search_service_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = LeafSearchStreamSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/quickwit.SearchService/LeafSearchSqlStream" => {
+                    #[allow(non_camel_case_types)]
+                    struct LeafSearchSqlStreamSvc<T: SearchService>(pub Arc<T>);
+                    impl<
+                        T: SearchService,
+                    > tonic::server::ServerStreamingService<super::LeafSearchRequest>
+                    for LeafSearchSqlStreamSvc<T> {
+                        type Response = super::LeafSearchResponse;
+                        type ResponseStream = T::LeafSearchSqlStreamStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::LeafSearchRequest>,
+                        ) -> Self::Future {
+                            let inner = self.0.clone();
+                            let fut = async move {
+                                (*inner).leaf_search_sql_stream(request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = LeafSearchSqlStreamSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

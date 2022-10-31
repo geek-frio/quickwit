@@ -45,6 +45,10 @@ service SearchService {
 
   // Perform a leaf stream on a given set of splits.
   rpc LeafSearchStream(LeafSearchStreamRequest) returns (stream LeafSearchStreamResponse);
+
+  // Perform a leaf search stream on a given set of splits.
+  // Used for sql analyze query to stream get all the data which is matched query
+  rpc LeafSearchSqlStream(LeafSearchRequest) returns (stream LeafSearchResponse);
 }
 
 // -- Search -------------------

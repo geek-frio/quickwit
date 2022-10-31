@@ -33,7 +33,7 @@ use quickwit_storage::StorageUriResolver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::info;
 
-use crate::search_stream::{leaf_search_stream, root_search_stream};
+use crate::search_stream::{leaf_search_sql_stream, leaf_search_stream, root_search_stream};
 use crate::{fetch_docs, leaf_search, root_search, ClusterClient, SearchClientPool, SearchError};
 
 #[derive(Clone)]
@@ -85,6 +85,12 @@ pub trait SearchService: 'static + Send + Sync {
         &self,
         request: LeafSearchStreamRequest,
     ) -> crate::Result<UnboundedReceiverStream<crate::Result<LeafSearchStreamResponse>>>;
+
+    /// Performs a leaf search to iterate all the datas as stream for sql analyze
+    async fn leaf_search_sql_stream(
+        &self,
+        request: LeafSearchRequest,
+    ) -> crate::Result<UnboundedReceiverStream<crate::Result<LeafSearchResponse>>>;
 }
 
 impl SearchServiceImpl {
@@ -197,5 +203,23 @@ impl SearchService for SearchServiceImpl {
         )
         .await;
         Ok(leaf_receiver)
+    }
+
+    async fn leaf_search_sql_stream(
+        &self,
+        request: LeafSearchRequest,
+    ) -> crate::Result<UnboundedReceiverStream<crate::Result<LeafSearchResponse>>> {
+        let search_request = request
+            .search_request
+            .ok_or_else(|| SearchError::InternalError("No search request".to_string()))?;
+
+        info!(index=?search_request.index_id, splits=?request.split_offsets, "leaf_search");
+        let storage = self.storage_uri_resolver.resolve(&request.index_uri)?;
+        let doc_mapper = deserialize_doc_mapper(&request.doc_mapper)?;
+
+        let receiver =
+            leaf_search_sql_stream(search_request, storage, request.split_offsets, doc_mapper)
+                .await;
+        Ok(UnboundedReceiverStream::new(receiver))
     }
 }

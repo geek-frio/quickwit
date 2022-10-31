@@ -24,7 +24,8 @@ use futures::TryStreamExt;
 use opentelemetry::global;
 use opentelemetry::propagation::Extractor;
 use quickwit_proto::{
-    search_service_server as grpc, tonic, LeafSearchStreamRequest, LeafSearchStreamResponse,
+    search_service_server as grpc, tonic, LeafSearchRequest, LeafSearchResponse,
+    LeafSearchStreamRequest, LeafSearchStreamResponse,
 };
 use quickwit_search::SearchService;
 use tracing::{instrument, Span};
@@ -125,6 +126,23 @@ impl grpc::SearchService for GrpcSearchAdapter {
         let leaf_search_result = self
             .0
             .leaf_search_stream(leaf_search_request)
+            .await
+            .map_err(|err| err.grpc_error())?
+            .map_err(|err| err.grpc_error());
+        Ok(tonic::Response::new(Box::pin(leaf_search_result)))
+    }
+
+    type LeafSearchSqlStreamStream = std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<LeafSearchResponse, tonic::Status>> + Send + Sync>,
+    >;
+    async fn leaf_search_sql_stream(
+        &self,
+        request: tonic::Request<LeafSearchRequest>,
+    ) -> Result<tonic::Response<Self::LeafSearchSqlStreamStream>, tonic::Status> {
+        let leaf_search_request = request.into_inner();
+        let leaf_search_result = self
+            .0
+            .leaf_search_sql_stream(leaf_search_request)
             .await
             .map_err(|err| err.grpc_error())?
             .map_err(|err| err.grpc_error());

@@ -26,6 +26,7 @@ use std::io;
 use std::io::Write;
 
 pub use collector::FastFieldCollector;
+pub use leaf::leaf_search_sql_stream;
 pub use leaf::leaf_search_stream;
 use quickwit_proto::OutputFormat;
 pub use root::root_search_stream;
