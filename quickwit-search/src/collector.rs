@@ -486,7 +486,7 @@ fn top_k_partial_hits(mut partial_hits: Vec<PartialHit>, num_hits: usize) -> Vec
 }
 
 /// Extracts all fast field names.
-fn extract_fast_field_names(
+pub fn extract_fast_field_names(
     doc_mapper: &dyn DocMapper,
     search_request: &SearchRequest,
 ) -> HashSet<String> {

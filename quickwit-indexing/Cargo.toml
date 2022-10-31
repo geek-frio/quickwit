@@ -59,7 +59,7 @@ tempfile = "3.3"
 thiserror = "1"
 time = { version = "0.3.9", features = ["std"] }
 tokio = { version = "1", features = ["sync"] }
-tokio-stream = "0.1"
+tokio-stream = "0.1.11"
 tracing = "0.1.29"
 ulid = "0.6"
 chrono = { version = "0.4" }

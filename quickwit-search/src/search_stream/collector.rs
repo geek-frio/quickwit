@@ -21,12 +21,13 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
+use crate::filters::TimestampFilter;
+use quickwit_proto::PartialHit;
 use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::fastfield::{DynamicFastFieldReader, FastFieldReader, FastValue};
 use tantivy::schema::Field;
 use tantivy::{DocId, Score, SegmentOrdinal, SegmentReader, TantivyError};
-
-use crate::filters::TimestampFilter;
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone)]
 pub struct FastFieldSegmentCollector<Item: FastValue> {
@@ -68,6 +69,94 @@ impl<Item: FastValue> SegmentCollector for FastFieldSegmentCollector<Item> {
 
     fn harvest(self) -> Vec<Item> {
         self.fast_field_values
+    }
+}
+
+pub struct SqlStreamCollector {
+    pub split_id: String,
+    pub timestamp_field_opt: Option<Field>,
+    pub start_timestamp_opt: Option<i64>,
+    pub end_timestamp_opt: Option<i64>,
+    pub doc_sender: UnboundedSender<PartialHit>,
+}
+
+pub struct SqlStreamSegmentCollector {
+    split_id: String,
+    segment_ord: u32,
+    timestamp_filter_opt: Option<TimestampFilter>,
+    doc_sender: UnboundedSender<PartialHit>,
+}
+
+impl SqlStreamSegmentCollector {
+    fn accept_document(&self, doc_id: DocId) -> bool {
+        if let Some(ref timestamp_filter) = self.timestamp_filter_opt {
+            if !timestamp_filter.is_within_range(doc_id) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl SegmentCollector for SqlStreamSegmentCollector {
+    type Fruit = ();
+
+    fn collect(&mut self, doc_id: DocId, _score: Score) {
+        if !self.accept_document(doc_id) {
+            return;
+        }
+        let partial_hit = PartialHit {
+            sorting_field_value: 0u64,
+            split_id: self.split_id.clone(),
+            segment_ord: self.segment_ord,
+            doc_id,
+        };
+        let _ = self.doc_sender.send(partial_hit);
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        // do nothing
+    }
+}
+
+impl Collector for SqlStreamCollector {
+    type Child = SqlStreamSegmentCollector;
+    type Fruit = ();
+
+    // SegmentOrdinal is used to idenfity a segment
+    fn for_segment(
+        &self,
+        segment_ord: SegmentOrdinal,
+        segment_reader: &SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        let timestamp_filter_opt = if let Some(timestamp_field) = self.timestamp_field_opt {
+            TimestampFilter::new(
+                timestamp_field,
+                self.start_timestamp_opt,
+                self.end_timestamp_opt,
+                segment_reader,
+            )?
+        } else {
+            None
+        };
+        Ok(SqlStreamSegmentCollector {
+            split_id: self.split_id.clone(),
+            segment_ord,
+            timestamp_filter_opt,
+            doc_sender: self.doc_sender.clone(),
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(
+        &self,
+        _segment_fruits: Vec<<Self::Child as SegmentCollector>::Fruit>,
+    ) -> tantivy::Result<Self::Fruit> {
+        // We dont't need merge operation
+        Ok(())
     }
 }
 

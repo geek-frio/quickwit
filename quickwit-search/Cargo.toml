@@ -49,7 +49,7 @@ tantivy = { git = "ssh://git@gitlab.91jkys.com/middlewares/log-platform-group/ta
 tantivy-query-grammar = { git = "ssh://git@gitlab.91jkys.com/middlewares/log-platform-group/tantivy.git", branch = "for-quickwit" }
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
+tokio-stream = {version = "0.1.11", features = ["time"] }
 tokio-util = { version = "0.7", features = ["full"] }
 tracing = "0.1.29"
 tracing-futures = "0.2.5"

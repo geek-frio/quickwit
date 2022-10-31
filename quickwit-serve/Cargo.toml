@@ -49,7 +49,7 @@ serde_qs = { version = "0.9", features = ["warp"] }
 termcolor = "1"
 thiserror = "1"
 tokio = { version = "1.19", features = ["full"] }
-tokio-stream = "0.1"
+tokio-stream = "0.1.11"
 tracing = "0.1.29"
 tracing-opentelemetry = "0.17"
 warp = "0.3"

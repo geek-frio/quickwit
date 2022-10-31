@@ -25,16 +25,17 @@ use std::sync::Arc;
 use futures::{FutureExt, StreamExt};
 use once_cell::sync::OnceCell;
 use quickwit_config::get_searcher_config_instance;
-use quickwit_doc_mapper::DocMapper;
+use quickwit_doc_mapper::{DocMapper, SortBy};
 use quickwit_proto::{
-    LeafSearchStreamResponse, OutputFormat, SearchRequest, SearchStreamRequest,
-    SplitIdAndFooterOffsets,
+    LeafSearchResponse, LeafSearchStreamResponse, OutputFormat, PartialHit, SearchRequest,
+    SearchStreamRequest, SplitIdAndFooterOffsets,
 };
 use quickwit_storage::Storage;
 use tantivy::fastfield::FastValue;
 use tantivy::query::Query;
 use tantivy::schema::{Field, Schema, Type};
 use tantivy::{LeasedItem, ReloadPolicy, Searcher};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::*;
@@ -42,6 +43,7 @@ use tracing::*;
 use super::collector::{PartionnedFastFieldCollector, PartitionValues};
 use super::FastFieldCollector;
 use crate::leaf::{open_index, warmup};
+use crate::search_stream::collector::SqlStreamCollector;
 use crate::{Result, SearchError};
 
 fn get_max_num_concurrent_split_streams() -> usize {
@@ -112,6 +114,129 @@ async fn leaf_search_results_stream(
             .shared()
         })
         .buffer_unordered(max_num_concurrent_split_streams)
+}
+
+// Aggregation query will be ignored
+async fn leaf_search_sql_stream(
+    request: SearchRequest,
+    storage: Arc<dyn Storage>,
+    splits: Vec<SplitIdAndFooterOffsets>,
+    doc_mapper: Arc<dyn DocMapper>,
+) -> tokio::sync::mpsc::UnboundedReceiver<Option<LeafSearchResponse>> {
+    let max_num_concurrent_split_streams = get_max_num_concurrent_split_streams();
+    let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut stream = futures::stream::iter(splits)
+        .map(move |split| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let split_task = leaf_search_sql_stream_single_split(
+                split,
+                doc_mapper.clone(),
+                request.clone(),
+                storage.clone(),
+                tx.clone(),
+            );
+
+            let stream = UnboundedReceiverStream::new(rx);
+            let mut chunkstream = Box::pin(tokio_stream::StreamExt::chunks_timeout(
+                stream,
+                200,
+                std::time::Duration::from_millis(200),
+            ));
+            let resp_tx = resp_tx.clone();
+            async move {
+                let res = split_task.await;
+                match res {
+                    Ok(_) => {
+                        while let Some(batch) = chunkstream.next().await {
+                            let leaf_search_resp = LeafSearchResponse {
+                                num_hits: batch.len() as u64,
+                                partial_hits: batch,
+                                failed_splits: Vec::new(),
+                                num_attempted_splits: 0,
+                                intermediate_aggregation_result: None,
+                            };
+                            let _ = resp_tx.send(Some(leaf_search_resp));
+                        }
+                        resp_tx.send(None)
+                    }
+                    Err(_e) => resp_tx.send(None),
+                }
+            }
+        })
+        .buffer_unordered(max_num_concurrent_split_streams);
+    tokio::spawn(async move {
+        while let Some(_) = stream.next().await {
+            // do nothing, wait collector to iterate all the records
+        }
+    });
+    resp_rx
+}
+
+async fn leaf_search_sql_stream_single_split(
+    split: SplitIdAndFooterOffsets,
+    doc_mapper: Arc<dyn DocMapper>,
+    stream_request: SearchRequest,
+    storage: Arc<dyn Storage>,
+    tx: UnboundedSender<PartialHit>,
+) -> crate::Result<()> {
+    let index = open_index(storage, &split).await?;
+    let split_schema = index.schema();
+
+    let search_request = Arc::new(stream_request.clone());
+    let query = doc_mapper.query(split_schema.clone(), &search_request)?;
+
+    let reader = index
+        .reader_builder()
+        .num_searchers(1)
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()?;
+    let fast_fields = extract_fast_fields(&doc_mapper, &stream_request);
+
+    let searcher = reader.searcher();
+    warmup(
+        &*searcher,
+        query.as_ref(),
+        &fast_fields,
+        &Default::default(),
+    )
+    .await?;
+
+    let schema = index.schema();
+    let timestamp_field_opt = doc_mapper.timestamp_field(&schema);
+
+    let sql_stream_collector = SqlStreamCollector {
+        split_id: split.split_id.clone(),
+        timestamp_field_opt,
+        start_timestamp_opt: stream_request.start_timestamp,
+        end_timestamp_opt: stream_request.end_timestamp,
+        doc_sender: tx,
+    };
+
+    let split_id = split.split_id;
+    crate::run_cpu_intensive(move || searcher.search(&query, &sql_stream_collector))
+        .await
+        .map_err(|_| {
+            crate::SearchError::InternalError(format!("Leaf search panicked. split={}", split_id))
+        })??;
+
+    Ok(())
+}
+
+fn extract_fast_fields(
+    doc_mapper: &Arc<dyn DocMapper>,
+    request: &SearchRequest,
+) -> HashSet<String> {
+    let mut fast_fields = HashSet::new();
+    if let Some(timestamp_field) = doc_mapper.timestamp_field_name() {
+        fast_fields.insert(timestamp_field);
+    }
+    if let SortBy::FastField { field_name, .. } = doc_mapper.sort_by() {
+        fast_fields.insert(field_name);
+    }
+    if let SortBy::FastField { field_name, .. } = SortBy::from(request) {
+        fast_fields.insert(field_name);
+    }
+    fast_fields
 }
 
 /// Apply a leaf search on a single split.
