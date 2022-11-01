@@ -19,7 +19,7 @@
 
 use futures::StreamExt;
 use quickwit_proto::{
-    FetchDocsRequest, FetchDocsResponse, LeafSearchRequest, LeafSearchResponse,
+    FetchDocsRequest, FetchDocsResponse, LeafHit, LeafSearchRequest, LeafSearchResponse,
     LeafSearchStreamRequest, LeafSearchStreamResponse,
 };
 use tantivy::aggregation::intermediate_agg_result::IntermediateAggregationResults;
@@ -94,6 +94,64 @@ impl ClusterClient {
             result = merge_leaf_search_results(result, retry_result);
         }
         result
+    }
+
+    /// Leaf search query iterate all the data for sql analyze
+    pub async fn leaf_search_sql_stream(
+        &self,
+        req: LeafSearchRequest,
+        mut client: SearchServiceClient,
+    ) -> UnboundedReceiverStream<crate::Result<Vec<LeafHit>>> {
+        let (result_sender, result_receiver) = unbounded_channel();
+        tokio::spawn(async move {
+            // Currently we dont do retry policy
+            let stream = client.leaf_search_sql_stream(req.clone()).await;
+            if let Err(e) = Self::forward_leaf_sql_stream(
+                client.clone(),
+                req,
+                stream,
+                result_sender.clone(),
+                false,
+            )
+            .await
+            {
+                let _ = result_sender.send(Err(e));
+            }
+        });
+        UnboundedReceiverStream::new(result_receiver)
+    }
+
+    async fn forward_leaf_sql_stream(
+        mut client: SearchServiceClient,
+        req: LeafSearchRequest,
+        mut stream: UnboundedReceiverStream<crate::Result<LeafSearchResponse>>,
+        sender: UnboundedSender<crate::Result<Vec<LeafHit>>>,
+        send_error: bool,
+    ) -> Result<(), SearchError> {
+        let search_req = req.search_request.unwrap();
+        let index_id = search_req.index_id;
+        let split_offsets = req.split_offsets;
+        let index_uri = req.index_uri;
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(response) => {
+                    let fetch_docs_request = FetchDocsRequest {
+                        partial_hits: response.partial_hits,
+                        index_id: index_id.clone(),
+                        split_offsets: split_offsets.clone(),
+                        index_uri: index_uri.clone(),
+                    };
+                    let response = client.fetch_docs(fetch_docs_request).await?;
+                    let _ = sender.send(crate::Result::Ok(response.hits));
+                }
+                Err(error) => {
+                    if send_error {
+                        let _ = sender.send(Err(error));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Leaf search stream with retry on another node client.

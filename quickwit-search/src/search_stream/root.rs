@@ -23,13 +23,68 @@ use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use quickwit_config::build_doc_mapper;
 use quickwit_metastore::Metastore;
-use quickwit_proto::{LeafSearchStreamRequest, SearchRequest, SearchStreamRequest};
+use quickwit_proto::{
+    LeafSearchRequest, LeafSearchStreamRequest, SearchRequest, SearchStreamRequest,
+};
 use tokio_stream::StreamMap;
 use tracing::*;
 
 use crate::cluster_client::ClusterClient;
 use crate::root::SearchJob;
 use crate::{list_relevant_splits, SearchClientPool, SearchError, SearchServiceClient};
+
+pub async fn root_search_sql_stream(
+    search_request: SearchRequest,
+    metastore: &dyn Metastore,
+    cluster_client: ClusterClient,
+    client_pool: &SearchClientPool,
+) -> crate::Result<impl futures::Stream<Item = crate::Result<Bytes>>> {
+    let index_meta = metastore.index_metadata(&search_request.index_id).await?;
+    let split_metadatas = list_relevant_splits(&search_request, metastore).await?;
+    let doc_mapper = build_doc_mapper(
+        &index_meta.doc_mapping,
+        &index_meta.search_settings,
+        &index_meta.indexing_settings,
+    )
+    .map_err(|err| {
+        SearchError::InternalError(format!("Failed to build doc mapper. Cause: {}", err))
+    })?;
+
+    let _query = doc_mapper.query(doc_mapper.schema(), &search_request)?;
+    let doc_mapper_str = serde_json::to_string(&doc_mapper).map_err(|err| {
+        SearchError::InternalError(format!("Failed to serialize doc mapper: Cause {}", err))
+    })?;
+
+    let leaf_search_jobs: Vec<SearchJob> = split_metadatas.iter().map(SearchJob::from).collect();
+    let assigned_leaf_search_jobs: Vec<(SearchServiceClient, Vec<SearchJob>)> =
+        client_pool.assign_jobs(leaf_search_jobs, &HashSet::default())?;
+
+    let mut stream_map: StreamMap<usize, _> = StreamMap::new();
+    for (leaf_ord, (client, client_jobs)) in assigned_leaf_search_jobs.into_iter().enumerate() {
+        let leaf_search_request = LeafSearchRequest {
+            search_request: Some(search_request.clone()),
+            split_offsets: client_jobs.into_iter().map(Into::into).collect(),
+            doc_mapper: doc_mapper_str.clone(),
+            index_uri: index_meta.index_uri.to_string(),
+        };
+
+        let leaf_response_stream = cluster_client
+            .leaf_search_sql_stream(leaf_search_request, client)
+            .await;
+        stream_map.insert(leaf_ord, leaf_response_stream);
+    }
+
+    Ok(stream_map
+        .map(|(_leaf_ord, result)| result)
+        .map_ok(|leaf_response| {
+            let hits = leaf_response
+                .into_iter()
+                .map(|hit| hit.leaf_json)
+                .collect::<Vec<String>>();
+            let s = serde_json::to_string(&hits).unwrap();
+            Bytes::from(s)
+        }))
+}
 
 /// Perform a distributed search stream.
 #[instrument(skip(metastore, cluster_client, client_pool))]

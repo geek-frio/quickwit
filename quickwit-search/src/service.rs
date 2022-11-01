@@ -33,7 +33,9 @@ use quickwit_storage::StorageUriResolver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::info;
 
-use crate::search_stream::{leaf_search_sql_stream, leaf_search_stream, root_search_stream};
+use crate::search_stream::{
+    leaf_search_sql_stream, leaf_search_stream, root_search_sql_stream, root_search_stream,
+};
 use crate::{fetch_docs, leaf_search, root_search, ClusterClient, SearchClientPool, SearchError};
 
 #[derive(Clone)]
@@ -78,6 +80,12 @@ pub trait SearchService: 'static + Send + Sync {
     async fn root_search_stream(
         &self,
         request: SearchStreamRequest,
+    ) -> crate::Result<Pin<Box<dyn futures::Stream<Item = crate::Result<Bytes>> + Send>>>;
+
+    /// Performs a root sql search for streaming
+    async fn root_search_sql_stream(
+        &self,
+        request: SearchRequest,
     ) -> crate::Result<Pin<Box<dyn futures::Stream<Item = crate::Result<Bytes>> + Send>>>;
 
     /// Performs a leaf search on a given set of splits and returns a stream.
@@ -175,6 +183,20 @@ impl SearchService for SearchServiceImpl {
     ) -> crate::Result<Pin<Box<dyn futures::Stream<Item = crate::Result<Bytes>> + Send>>> {
         let data = root_search_stream(
             stream_request,
+            self.metastore.as_ref(),
+            self.cluster_client.clone(),
+            &self.client_pool,
+        )
+        .await?;
+        Ok(Box::pin(data))
+    }
+
+    async fn root_search_sql_stream(
+        &self,
+        request: SearchRequest,
+    ) -> crate::Result<Pin<Box<dyn futures::Stream<Item = crate::Result<Bytes>> + Send>>> {
+        let data = root_search_sql_stream(
+            request,
             self.metastore.as_ref(),
             self.cluster_client.clone(),
             &self.client_pool,

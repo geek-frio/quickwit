@@ -29,6 +29,7 @@ pub use collector::FastFieldCollector;
 pub use leaf::leaf_search_sql_stream;
 pub use leaf::leaf_search_stream;
 use quickwit_proto::OutputFormat;
+pub use root::root_search_sql_stream;
 pub use root::root_search_stream;
 use tantivy::fastfield::FastValue;
 

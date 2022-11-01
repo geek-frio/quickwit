@@ -690,6 +690,7 @@ mod tests {
         let mut batch_num = 0;
         while let Some(data) = receiver.recv().await {
             batch_num += 1;
+            let data = data.unwrap();
             println!(
                 "batch num is:{}, batch length:{}, batch first record is:{:?}",
                 batch_num,

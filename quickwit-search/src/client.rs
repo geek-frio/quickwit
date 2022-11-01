@@ -24,7 +24,7 @@ use std::sync::Arc;
 use futures::{StreamExt, TryStreamExt};
 use opentelemetry::global;
 use opentelemetry::propagation::Injector;
-use quickwit_proto::{tonic, LeafSearchStreamResponse};
+use quickwit_proto::{tonic, LeafSearchResponse, LeafSearchStreamResponse};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Channel;
 use tonic::Request;
@@ -140,6 +140,49 @@ impl SearchServiceClient {
                 Ok(tonic_response.into_inner())
             }
             SearchServiceClientImpl::Local(service) => service.leaf_search(request).await,
+        }
+    }
+
+    /// Perfrom leaf search all the data for sql analyze
+    pub async fn leaf_search_sql_stream(
+        &mut self,
+        request: quickwit_proto::LeafSearchRequest,
+    ) -> UnboundedReceiverStream<crate::Result<LeafSearchResponse>> {
+        match &mut self.client_impl {
+            SearchServiceClientImpl::Grpc(grpc_client) => {
+                let mut grpc_client_clone = grpc_client.clone();
+                let (result_sender, result_receiver) = tokio::sync::mpsc::unbounded_channel();
+                tokio::spawn(async move {
+                    let tonic_result = grpc_client_clone
+                        .leaf_search_sql_stream(request)
+                        .await
+                        .map_err(|tonic_error| parse_grpc_error(&tonic_error));
+                    if let Err(error) = tonic_result {
+                        let _ = result_sender.send(Err(error));
+                        return;
+                    }
+                    let mut results_stream = tonic_result
+                        .unwrap()
+                        .into_inner()
+                        .map_err(|tonic_error| parse_grpc_error(&tonic_error));
+                    while let Some(search_result) = results_stream.next().await {
+                        let send_result = result_sender.send(search_result);
+                        if send_result.is_err() {
+                            break;
+                        }
+                    }
+                });
+                UnboundedReceiverStream::new(result_receiver)
+            }
+            SearchServiceClientImpl::Local(service) => {
+                let stream_result = service.leaf_search_sql_stream(request).await;
+                stream_result.unwrap_or_else(|error| {
+                    let (result_sender, result_receiver) = tokio::sync::mpsc::unbounded_channel();
+                    // Receiver cannot be closed here, ignore error.
+                    let _ = result_sender.send(Err(error));
+                    UnboundedReceiverStream::new(result_receiver)
+                })
+            }
         }
     }
 
