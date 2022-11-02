@@ -161,11 +161,101 @@ mod tests {
 
     use quickwit_indexing::mock_split;
     use quickwit_metastore::{IndexMetadata, MockMetastore, SplitState};
-    use quickwit_proto::OutputFormat;
+    use quickwit_proto::{FetchDocsResponse, LeafHit, OutputFormat, PartialHit};
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use super::*;
     use crate::MockSearchService;
+
+    #[tokio::test]
+    async fn test_root_search_sql_stream_single_split() -> anyhow::Result<()> {
+        let request = SearchRequest {
+            index_id: "test-idx".to_string(),
+            query: "test".to_string(),
+            search_fields: vec!["body".to_string()],
+            start_timestamp: None,
+            end_timestamp: None,
+            max_hits: 0,
+            start_offset: 0,
+            sort_order: None,
+            sort_by_field: None,
+            aggregation_request: None,
+        };
+
+        let mut metastore = MockMetastore::new();
+        metastore
+            .expect_index_metadata()
+            .returning(|_index_id: &str| {
+                Ok(IndexMetadata::for_test(
+                    "test-idx",
+                    "file:///path/to/index/test-idx",
+                ))
+            });
+        metastore.expect_list_splits().returning(
+            |_index_id: &str, _split_state: SplitState, _time_range: Option<Range<i64>>, _tags| {
+                Ok(vec![mock_split("split1")])
+            },
+        );
+
+        let mut mock_search_service = MockSearchService::new();
+        let (result_sender, result_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let _ = result_sender.send(Ok(quickwit_proto::LeafSearchResponse {
+            num_hits: 1,
+            partial_hits: vec![PartialHit {
+                sorting_field_value: 0,
+                split_id: "split1".to_string(),
+                segment_ord: 1,
+                doc_id: 1,
+            }],
+            failed_splits: Vec::new(),
+            num_attempted_splits: 0,
+            intermediate_aggregation_result: None,
+        }));
+
+        let _ = result_sender.send(Ok(quickwit_proto::LeafSearchResponse {
+            num_hits: 1,
+            partial_hits: vec![PartialHit {
+                sorting_field_value: 0,
+                split_id: "split1".to_string(),
+                segment_ord: 2,
+                doc_id: 2,
+            }],
+            failed_splits: Vec::new(),
+            num_attempted_splits: 0,
+            intermediate_aggregation_result: None,
+        }));
+
+        mock_search_service
+            .expect_leaf_search_sql_stream()
+            .return_once(|_leaf_search_req: quickwit_proto::LeafSearchRequest| {
+                Ok(UnboundedReceiverStream::new(result_receiver))
+            });
+        mock_search_service.expect_fetch_docs().returning(
+            |request: quickwit_proto::FetchDocsRequest| {
+                println!("Fetch request is:{:?}", request);
+                Ok(FetchDocsResponse {
+                    hits: vec![LeafHit {
+                        leaf_json: "{}".to_string(),
+                        partial_hit: None,
+                    }],
+                })
+            },
+        );
+        drop(result_sender);
+        let client_pool = SearchClientPool::from_mocks(vec![Arc::new(mock_search_service)]).await?;
+        let cluster_client = ClusterClient::new(client_pool.clone());
+
+        let result: Vec<Bytes> =
+            root_search_sql_stream(request, &metastore, cluster_client, &client_pool)
+                .await?
+                .try_collect()
+                .await?;
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(&result[0], &b"[\"{}\"]"[..]);
+        assert_eq!(&result[1], &b"[\"{}\"]"[..]);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_root_search_stream_single_split() -> anyhow::Result<()> {
