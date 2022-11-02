@@ -36,7 +36,9 @@ use crate::error::ServiceError;
 use crate::{with_arg, Format};
 
 fn sort_by_field_mini_dsl<'de, D>(deserializer: D) -> Result<Option<SortByField>, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let string = String::deserialize(deserializer)?;
     Ok(Some(string.into()))
 }
@@ -56,7 +58,9 @@ fn default_max_hits() -> u64 {
 // Conclusion: the best way I found to reject a user query that contains an empty
 // string on an mandatory field is this serializer.
 fn deserialize_not_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let value = String::deserialize(deserializer)?;
     if value.is_empty() {
         return Err(de::Error::custom("Expected a non empty string field."));
@@ -65,7 +69,9 @@ where D: Deserializer<'de> {
 }
 
 fn from_simple_list<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let str_sequence = String::deserialize(deserializer)?;
     Ok(Some(
         str_sequence
@@ -206,6 +212,14 @@ pub fn search_stream_handler(
         .and_then(search_stream)
 }
 
+pub fn search_sql_stream_handler(
+    search_service: Arc<dyn SearchService>,
+) -> impl Filter<Extract = impl warp::Reply, Error = Rejection> + Clone {
+    search_sql_stream_filter()
+        .and(with_arg(search_service))
+        .and_then(search_sql_stream)
+}
+
 /// This struct represents the search stream query passed to
 /// the REST API.
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -313,9 +327,82 @@ async fn search_stream(
     Ok(reply_with_header)
 }
 
+async fn search_sql_stream(
+    index_id: String,
+    request: SearchRequestQueryString,
+    search_service: Arc<dyn SearchService>,
+) -> Result<impl warp::Reply, Infallible> {
+    let content_type = "application/octet-stream";
+
+    let request = quickwit_proto::SearchRequest {
+        index_id: index_id,
+        query: request.query,
+        search_fields: Vec::new(),
+        start_timestamp: request.start_timestamp,
+        end_timestamp: request.end_timestamp,
+        max_hits: 0,
+        start_offset: 0,
+        sort_order: None,
+        sort_by_field: None,
+        aggregation_request: None,
+    };
+
+    let data = search_service.root_search_sql_stream(request).await;
+    let status_code: StatusCode;
+    let body = match data {
+        Ok(mut data) => {
+            let (mut sender, body) = hyper::Body::channel();
+
+            tokio::spawn(async move {
+                while let Some(result) = data.next().await {
+                    match result {
+                        Ok(bytes) => {
+                            if sender.send_data(bytes).await.is_err() {
+                                sender.abort();
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::error!(error=?error, "Error when streaming search results.");
+                            let header_value_str =
+                                format!("Error when sql streaming search results: {:?}.", error);
+                            let header_value = HeaderValue::from_str(header_value_str.as_str())
+                                .unwrap_or_else(|_| {
+                                    HeaderValue::from_static("Search stream error")
+                                });
+                            let mut trailers = HeaderMap::new();
+                            trailers.insert("X-Stream-Error", header_value);
+                            let _ = sender.send_trailers(trailers).await;
+                            sender.abort();
+                            break;
+                        }
+                    }
+                }
+            });
+
+            status_code = StatusCode::OK;
+            warp::reply::Response::new(body)
+        }
+        Err(e) => {
+            status_code = e.status_code().to_http_status_code();
+            warp::reply::Response::new(hyper::Body::from(e.to_string()))
+        }
+    };
+    let reply = reply::with_status(body, status_code);
+    let reply_with_header = reply::with_header(reply, CONTENT_TYPE, content_type);
+    Ok(reply_with_header)
+}
+
 fn search_stream_filter(
 ) -> impl Filter<Extract = (String, SearchStreamRequestQueryString), Error = Rejection> + Clone {
     warp::path!(String / "search" / "stream")
+        .and(warp::get())
+        .and(serde_qs::warp::query(serde_qs::Config::default()))
+}
+
+fn search_sql_stream_filter(
+) -> impl Filter<Extract = (String, SearchRequestQueryString), Error = Rejection> + Clone {
+    warp::path!(String / "search" / "sql_stream")
         .and(warp::get())
         .and(serde_qs::warp::query(serde_qs::Config::default()))
 }

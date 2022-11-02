@@ -128,25 +128,26 @@ impl ClusterClient {
         sender: UnboundedSender<crate::Result<Vec<LeafHit>>>,
         send_error: bool,
     ) -> Result<(), SearchError> {
-        let search_req = req.search_request.unwrap();
-        let index_id = search_req.index_id;
-        let split_offsets = req.split_offsets;
-        let index_uri = req.index_uri;
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(response) => {
-                    let fetch_docs_request = FetchDocsRequest {
-                        partial_hits: response.partial_hits,
-                        index_id: index_id.clone(),
-                        split_offsets: split_offsets.clone(),
-                        index_uri: index_uri.clone(),
-                    };
-                    let response = client.fetch_docs(fetch_docs_request).await?;
-                    let _ = sender.send(crate::Result::Ok(response.hits));
-                }
-                Err(error) => {
-                    if send_error {
-                        let _ = sender.send(Err(error));
+        if let Some(search_req) = req.search_request {
+            let index_id = search_req.index_id;
+            let split_offsets = req.split_offsets;
+            let index_uri = req.index_uri;
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(response) => {
+                        let fetch_docs_request = FetchDocsRequest {
+                            partial_hits: response.partial_hits,
+                            index_id: index_id.clone(),
+                            split_offsets: split_offsets.clone(),
+                            index_uri: index_uri.clone(),
+                        };
+                        let response = client.fetch_docs(fetch_docs_request).await?;
+                        let _ = sender.send(crate::Result::Ok(response.hits));
+                    }
+                    Err(error) => {
+                        if send_error {
+                            let _ = sender.send(Err(error));
+                        }
                     }
                 }
             }

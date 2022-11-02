@@ -31,7 +31,9 @@ use crate::health_check_api::liveness_check_handler;
 use crate::index_api::index_management_handlers;
 use crate::indexing_api::indexing_get_handler;
 use crate::ingest_api::{elastic_bulk_handler, ingest_handler, tail_handler};
-use crate::search_api::{search_get_handler, search_post_handler, search_stream_handler};
+use crate::search_api::{
+    search_get_handler, search_post_handler, search_sql_stream_handler, search_stream_handler,
+};
 use crate::ui_handler::ui_handler;
 use crate::{Format, QuickwitServices};
 
@@ -54,6 +56,9 @@ pub(crate) async fn start_rest_server(
         ))
         .or(search_get_handler(quickwit_services.search_service.clone()))
         .or(search_post_handler(
+            quickwit_services.search_service.clone(),
+        ))
+        .or(search_sql_stream_handler(
             quickwit_services.search_service.clone(),
         ))
         .or(search_stream_handler(
