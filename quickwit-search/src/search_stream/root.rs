@@ -24,8 +24,9 @@ use futures::{StreamExt, TryStreamExt};
 use quickwit_config::build_doc_mapper;
 use quickwit_metastore::Metastore;
 use quickwit_proto::{
-    LeafSearchRequest, LeafSearchStreamRequest, SearchRequest, SearchStreamRequest,
+    LeafHit, LeafSearchRequest, LeafSearchStreamRequest, SearchRequest, SearchStreamRequest,
 };
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamMap;
 use tracing::*;
 
@@ -39,6 +40,26 @@ pub async fn root_search_sql_stream(
     cluster_client: ClusterClient,
     client_pool: &SearchClientPool,
 ) -> crate::Result<impl futures::Stream<Item = crate::Result<Bytes>>> {
+    let stream_map =
+        root_search_sql_stream_leaf_hits(search_request, metastore, cluster_client, client_pool)
+            .await?;
+    Ok(stream_map
+        .map(|(_leaf_ord, result)| result)
+        .map_ok(|leaf_response| {
+            let hits = leaf_response
+                .into_iter()
+                .map(|hit| hit.leaf_json)
+                .collect::<Vec<String>>();
+            let s = serde_json::to_string(&hits).unwrap();
+            Bytes::from(s)
+        }))
+}
+pub async fn root_search_sql_stream_leaf_hits(
+    search_request: SearchRequest,
+    metastore: &dyn Metastore,
+    cluster_client: ClusterClient,
+    client_pool: &SearchClientPool,
+) -> crate::Result<StreamMap<usize, UnboundedReceiverStream<Result<Vec<LeafHit>, SearchError>>>> {
     let index_meta = metastore.index_metadata(&search_request.index_id).await?;
     let split_metadatas = list_relevant_splits(&search_request, metastore).await?;
     let doc_mapper = build_doc_mapper(
@@ -74,16 +95,7 @@ pub async fn root_search_sql_stream(
         stream_map.insert(leaf_ord, leaf_response_stream);
     }
 
-    Ok(stream_map
-        .map(|(_leaf_ord, result)| result)
-        .map_ok(|leaf_response| {
-            let hits = leaf_response
-                .into_iter()
-                .map(|hit| hit.leaf_json)
-                .collect::<Vec<String>>();
-            let s = serde_json::to_string(&hits).unwrap();
-            Bytes::from(s)
-        }))
+    Ok(stream_map)
 }
 
 /// Perform a distributed search stream.
@@ -166,6 +178,11 @@ mod tests {
 
     use super::*;
     use crate::MockSearchService;
+
+    #[tokio::test]
+    async fn test_datafustion_analyzer() -> anyhow::Result<()> {
+        todo!()
+    }
 
     #[tokio::test]
     async fn test_root_search_sql_stream_single_split() -> anyhow::Result<()> {

@@ -35,6 +35,7 @@ mod search_client_pool;
 mod search_response_rest;
 mod search_stream;
 mod service;
+mod sql;
 mod thread_pool;
 
 #[cfg(test)]

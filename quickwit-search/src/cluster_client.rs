@@ -133,6 +133,7 @@ impl ClusterClient {
             let split_offsets = req.split_offsets;
             let index_uri = req.index_uri;
             while let Some(result) = stream.next().await {
+                tracing::info!("Has received remote response");
                 match result {
                     Ok(response) => {
                         let fetch_docs_request = FetchDocsRequest {

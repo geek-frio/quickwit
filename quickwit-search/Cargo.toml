@@ -54,6 +54,9 @@ tokio-util = { version = "0.7", features = ["full"] }
 tracing = "0.1.29"
 tracing-futures = "0.2.5"
 tracing-opentelemetry = "0.17"
+datafusion = "13.0.0"
+arrow = "24.0.0"
+pin-project = "1.0.12"
 
 [dev-dependencies]
 assert-json-diff = "2"

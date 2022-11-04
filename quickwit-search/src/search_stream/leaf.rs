@@ -20,7 +20,6 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use futures::{FutureExt, StreamExt};
@@ -127,7 +126,6 @@ pub async fn leaf_search_sql_stream(
     let max_num_concurrent_split_streams = get_max_num_concurrent_split_streams();
     let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let split_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(splits.len()));
     let mut stream = futures::stream::iter(splits)
         .map(move |split| {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -139,12 +137,11 @@ pub async fn leaf_search_sql_stream(
                 tx.clone(),
             );
 
-            let split_counter = split_counter.clone();
             let stream = UnboundedReceiverStream::new(rx);
             let mut chunkstream = Box::pin(tokio_stream::StreamExt::chunks_timeout(
                 stream,
-                200,
-                std::time::Duration::from_millis(200),
+                100,
+                std::time::Duration::from_millis(50),
             ));
             let resp_tx = resp_tx.clone();
             async move {
@@ -161,16 +158,9 @@ pub async fn leaf_search_sql_stream(
                             };
                             let _ = resp_tx.send(crate::Result::Ok(leaf_search_resp));
                         }
-                        let cur = split_counter.fetch_sub(1, Ordering::Relaxed);
-                        if cur == 0 {
-                            let _ = resp_tx.send(crate::Result::Ok(LeafSearchResponse::default()));
-                        }
                     }
-                    Err(_e) => {
-                        let cur = split_counter.fetch_sub(1, Ordering::Relaxed);
-                        if cur == 0 {
-                            let _ = resp_tx.send(crate::Result::Ok(LeafSearchResponse::default()));
-                        }
+                    Err(e) => {
+                        tracing::error!("sql stream iterate operation error :{:?}", e);
                     }
                 }
             }

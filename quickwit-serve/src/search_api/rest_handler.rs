@@ -357,6 +357,7 @@ async fn search_sql_stream(
                 while let Some(result) = data.next().await {
                     match result {
                         Ok(bytes) => {
+                            tracing::info!("Has sent data to hyper");
                             if sender.send_data(bytes).await.is_err() {
                                 sender.abort();
                                 break;
