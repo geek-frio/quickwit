@@ -24,9 +24,78 @@ use quickwit_doc_mapper::DefaultDocMapper;
 use quickwit_indexing::TestSandbox;
 use quickwit_proto::{LeafHit, SearchRequest, SortOrder};
 use serde_json::json;
+use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt, StreamMap};
 
 use super::*;
-use crate::single_node_search;
+use crate::{
+    search_stream::{leaf_search_sql_stream, root_search_sql_stream_leaf_hits},
+    single_node_search,
+};
+
+#[tokio::test]
+async fn test_datafusion_table_provider() -> anyhow::Result<()> {
+    let index_id = "datafusion-table-simple-1";
+    let doc_mapping_yaml = r#"
+        field_mappings:
+            - name: body
+              type: text
+            - name: id
+              type: u64
+            - name: val
+              type: i64
+    "#;
+    // Mock datas
+    let test_sandbox = TestSandbox::create(index_id, doc_mapping_yaml, "{}", &["body"]).await?;
+    let mut docs = vec![];
+    for i in 0..1000 {
+        let body = format!("body {}", i + 1000);
+        docs.push(json!({"body": body, "id": i + 10000, "val": i*2 + 100}));
+    }
+    test_sandbox.add_documents(docs).await?;
+
+    let search_request = SearchRequest {
+        index_id: index_id.to_string(),
+        query: "body".to_string(),
+        search_fields: Vec::new(),
+        start_timestamp: None,
+        end_timestamp: None,
+        max_hits: 2,
+        start_offset: 0,
+        ..Default::default()
+    };
+    let metastore = &*test_sandbox.metastore();
+    let storage_resolver = test_sandbox.storage_uri_resolver();
+
+    let index_metadata = metastore.index_metadata(&search_request.index_id).await?;
+    let index_storage = storage_resolver.resolve(&index_metadata.index_uri)?;
+    let metas = list_relevant_splits(&search_request, metastore).await?;
+    let split_metadata: Vec<SplitIdAndFooterOffsets> =
+        metas.iter().map(extract_split_and_footer_offsets).collect();
+    let doc_mapper = build_doc_mapper(
+        &index_metadata.doc_mapping,
+        &index_metadata.search_settings,
+        &index_metadata.indexing_settings,
+    )
+    .map_err(|err| {
+        SearchError::InternalError(format!("Failed to build doc mapper. Cause: {}", err))
+    })?;
+    let rx =
+        leaf_search_sql_stream(search_request, index_storage, split_metadata, doc_mapper).await;
+
+    let b = UnboundedReceiverStream::new(rx).map(|a| {
+        a.map(|r| r.partial_hits);
+        a
+    });
+    let mut mock_service = MockSearchService::new();
+    // mock_service
+    //     .expect_root_search_sql_stream_leaf_hits()
+    //     .return_once(|_request: SearchRequest| {
+    //         let mut stream_map = StreamMap::new();
+    //         stream_map.insert(1usize, b);
+    //         Ok(stream_map)
+    //     });
+    Ok(())
+}
 
 #[tokio::test]
 async fn test_single_node_simple() -> anyhow::Result<()> {
@@ -74,7 +143,9 @@ async fn test_single_node_simple() -> anyhow::Result<()> {
 
 // TODO remove me once `Iterator::is_sorted_by_key` is stabilized.
 fn is_sorted<E, I: Iterator<Item = E>>(mut it: I) -> bool
-where E: Ord {
+where
+    E: Ord,
+{
     let mut previous_el = if let Some(first_el) = it.next() {
         first_el
     } else {
