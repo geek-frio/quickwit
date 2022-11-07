@@ -26,7 +26,6 @@ use quickwit_metastore::Metastore;
 use quickwit_proto::{
     LeafHit, LeafSearchRequest, LeafSearchStreamRequest, SearchRequest, SearchStreamRequest,
 };
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamMap;
 use tracing::*;
 
@@ -59,7 +58,19 @@ pub async fn root_search_sql_stream_leaf_hits(
     metastore: &dyn Metastore,
     cluster_client: ClusterClient,
     client_pool: &SearchClientPool,
-) -> crate::Result<StreamMap<usize, UnboundedReceiverStream<Result<Vec<LeafHit>, SearchError>>>> {
+) -> crate::Result<
+    StreamMap<
+        usize,
+        std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = Result<Vec<LeafHit>, SearchError>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        >,
+    >,
+> {
     let index_meta = metastore.index_metadata(&search_request.index_id).await?;
     let split_metadatas = list_relevant_splits(&search_request, metastore).await?;
     let doc_mapper = build_doc_mapper(
@@ -92,9 +103,16 @@ pub async fn root_search_sql_stream_leaf_hits(
         let leaf_response_stream = cluster_client
             .leaf_search_sql_stream(leaf_search_request, client)
             .await;
-        stream_map.insert(leaf_ord, leaf_response_stream);
+        let a: std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = Result<Vec<LeafHit>, SearchError>>
+                    + Sync
+                    + Send
+                    + 'static,
+            >,
+        > = Box::pin(leaf_response_stream);
+        stream_map.insert(leaf_ord, a);
     }
-
     Ok(stream_map)
 }
 

@@ -28,7 +28,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::task::Poll;
 use tantivy::schema::{FieldType, Schema};
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamMap;
 
 struct QuickwitTableProvider {
@@ -38,6 +37,7 @@ struct QuickwitTableProvider {
 }
 
 impl QuickwitTableProvider {
+    #[allow(dead_code)]
     pub fn new(
         schema: Schema,
         search_service: Arc<dyn SearchService>,
@@ -55,7 +55,18 @@ impl QuickwitTableProvider {
 struct QuickwitExecutionPlan {
     schema: Arc<ArrowSchema>,
     #[pin]
-    recv: StreamMap<usize, UnboundedReceiverStream<std::result::Result<Vec<LeafHit>, SearchError>>>,
+    recv: StreamMap<
+        usize,
+        std::pin::Pin<
+            Box<
+                dyn Stream<Item = std::result::Result<Vec<LeafHit>, SearchError>>
+                    + Sync
+                    + Send
+                    + 'static,
+            >,
+        >,
+    >,
+    // recv: StreamMap<usize, UnboundedReceiverStream<std::result::Result<Vec<LeafHit>, SearchError>>>,
 }
 
 impl Stream for QuickwitExecutionPlan {

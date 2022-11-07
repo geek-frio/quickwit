@@ -79,21 +79,41 @@ async fn test_datafusion_table_provider() -> anyhow::Result<()> {
     .map_err(|err| {
         SearchError::InternalError(format!("Failed to build doc mapper. Cause: {}", err))
     })?;
-    let rx =
-        leaf_search_sql_stream(search_request, index_storage, split_metadata, doc_mapper).await;
+    let mut rx = leaf_search_sql_stream(
+        search_request,
+        index_storage.clone(),
+        split_metadata.clone(),
+        doc_mapper,
+    )
+    .await;
 
-    let b = UnboundedReceiverStream::new(rx).map(|a| {
-        a.map(|r| r.partial_hits);
-        a
-    });
+    let (s, r) = tokio::sync::mpsc::unbounded_channel();
+    while let Some(r) = rx.recv().await {
+        let resp = r.unwrap();
+        let partial_hits = resp.partial_hits;
+
+        let result = fetch_docs(partial_hits, index_storage.clone(), &split_metadata)
+            .await
+            .unwrap();
+        let leaf_hits = result.hits;
+        let _ = s.send(Ok(leaf_hits));
+    }
+    let stream: std::pin::Pin<
+        Box<
+            dyn futures::Stream<Item = std::result::Result<Vec<LeafHit>, SearchError>>
+                + Sync
+                + Send
+                + 'static,
+        >,
+    > = Box::pin(UnboundedReceiverStream::new(r));
     let mut mock_service = MockSearchService::new();
-    // mock_service
-    //     .expect_root_search_sql_stream_leaf_hits()
-    //     .return_once(|_request: SearchRequest| {
-    //         let mut stream_map = StreamMap::new();
-    //         stream_map.insert(1usize, b);
-    //         Ok(stream_map)
-    //     });
+    mock_service
+        .expect_root_search_sql_stream_leaf_hits()
+        .return_once(|_request: SearchRequest| {
+            let mut stream_map = StreamMap::new();
+            stream_map.insert(1usize, stream);
+            Ok(stream_map)
+        });
     Ok(())
 }
 

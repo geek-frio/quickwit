@@ -91,10 +91,28 @@ pub trait SearchService: 'static + Send + Sync {
     ) -> crate::Result<Pin<Box<dyn futures::Stream<Item = crate::Result<Bytes>> + Send>>>;
 
     /// Performs a root sql search for streaming
+    // async fn root_search_sql_stream_leaf_hits(
+    //     &self,
+    //     request: SearchRequest,
+    // ) -> crate::Result<StreamMap<usize, UnboundedReceiverStream<Result<Vec<LeafHit>, SearchError>>>>;
+
+    /// Performs a root sql search for streaming
     async fn root_search_sql_stream_leaf_hits(
         &self,
         request: SearchRequest,
-    ) -> crate::Result<StreamMap<usize, UnboundedReceiverStream<Result<Vec<LeafHit>, SearchError>>>>;
+    ) -> crate::Result<
+        StreamMap<
+            usize,
+            Pin<
+                Box<
+                    dyn futures::Stream<Item = Result<Vec<LeafHit>, SearchError>>
+                        + Sync
+                        + Send
+                        + 'static,
+                >,
+            >,
+        >,
+    >;
 
     /// Performs a leaf search on a given set of splits and returns a stream.
     async fn leaf_search_stream(
@@ -216,8 +234,19 @@ impl SearchService for SearchServiceImpl {
     async fn root_search_sql_stream_leaf_hits(
         &self,
         request: SearchRequest,
-    ) -> crate::Result<StreamMap<usize, UnboundedReceiverStream<Result<Vec<LeafHit>, SearchError>>>>
-    {
+    ) -> crate::Result<
+        StreamMap<
+            usize,
+            Pin<
+                Box<
+                    dyn futures::Stream<Item = Result<Vec<LeafHit>, SearchError>>
+                        + Send
+                        + Sync
+                        + 'static,
+                >,
+            >,
+        >,
+    > {
         root_search_sql_stream_leaf_hits(
             request,
             self.metastore.as_ref(),
