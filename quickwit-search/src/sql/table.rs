@@ -26,11 +26,12 @@ use serde_json::{Result as SerdeResult, Value};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::task::Poll;
 use tantivy::schema::{FieldType, Schema};
 use tokio_stream::StreamMap;
 
-struct QuickwitTableProvider {
+pub struct QuickwitTableProvider {
     schema: Schema,
     search_service: Arc<dyn SearchService>,
     request: SearchRequest,
@@ -51,8 +52,27 @@ impl QuickwitTableProvider {
     }
 }
 
+pub struct QuickwitExecutionPlan {
+    schema: Arc<ArrowSchema>,
+    recv: std::sync::Mutex<
+        Option<
+            StreamMap<
+                usize,
+                std::pin::Pin<
+                    Box<
+                        dyn Stream<Item = std::result::Result<Vec<LeafHit>, SearchError>>
+                            + Sync
+                            + Send
+                            + 'static,
+                    >,
+                >,
+            >,
+        >,
+    >,
+}
+
 #[pin_project]
-struct QuickwitExecutionPlan {
+pub struct QuickwitTableStream {
     schema: Arc<ArrowSchema>,
     #[pin]
     recv: StreamMap<
@@ -66,10 +86,9 @@ struct QuickwitExecutionPlan {
             >,
         >,
     >,
-    // recv: StreamMap<usize, UnboundedReceiverStream<std::result::Result<Vec<LeafHit>, SearchError>>>,
 }
 
-impl Stream for QuickwitExecutionPlan {
+impl Stream for QuickwitTableStream {
     type Item = ArrowResult<RecordBatch>;
 
     fn poll_next(
@@ -202,7 +221,7 @@ impl Stream for QuickwitExecutionPlan {
     }
 }
 
-impl RecordBatchStream for QuickwitExecutionPlan {
+impl RecordBatchStream for QuickwitTableStream {
     fn schema(&self) -> arrow::datatypes::SchemaRef {
         self.schema.clone()
     }
@@ -250,13 +269,68 @@ impl ExecutionPlan for QuickwitExecutionPlan {
         _partition: usize,
         _context: Arc<datafusion::execution::context::TaskContext>,
     ) -> datafusion::error::Result<datafusion::physical_plan::SendableRecordBatchStream> {
-        todo!()
+        let mut guard = self.recv.lock().unwrap();
+        if guard.is_some() {
+            let stream_map = guard.take().unwrap();
+            let schema = self.schema.clone();
+
+            let stream = QuickwitTableStream {
+                schema,
+                recv: stream_map,
+            };
+            datafusion::error::Result::Ok(Box::pin(stream))
+        } else {
+            Err(DataFusionError::Plan(
+                "Not supported to execute twice for quickwit table".to_string(),
+            ))
+        }
     }
 
     // TODO: 暂不明确作用，先置为空
     fn statistics(&self) -> datafusion::physical_plan::Statistics {
         Statistics::default()
     }
+}
+
+pub fn schema_convert(tantivy_schema: &Schema) -> Arc<ArrowSchema> {
+    let fields = tantivy_schema.fields();
+    let mut df_fields = Vec::new();
+    for (_field, entry) in fields {
+        match &entry.field_type() {
+            FieldType::Bool(_) => {
+                let df_field = arrow::datatypes::Field::new(entry.name(), DataType::Boolean, true);
+                df_fields.push(df_field);
+            }
+            FieldType::U64(_) => {
+                let df_field = arrow::datatypes::Field::new(entry.name(), DataType::UInt64, true);
+                df_fields.push(df_field);
+            }
+            FieldType::I64(_) => {
+                let df_field = arrow::datatypes::Field::new(entry.name(), DataType::Int64, true);
+                df_fields.push(df_field);
+            }
+            FieldType::F64(_) => {
+                let df_field = arrow::datatypes::Field::new(entry.name(), DataType::Float64, true);
+                df_fields.push(df_field);
+            }
+            FieldType::Date(_) => {
+                let df_field = arrow::datatypes::Field::new(entry.name(), DataType::Date64, true);
+                df_fields.push(df_field);
+            }
+            // Text data default utf-8
+            FieldType::Str(opt) => {
+                if !opt.is_stored() {
+                    continue;
+                }
+                let df_field = arrow::datatypes::Field::new(entry.name(), DataType::Utf8, true);
+                df_fields.push(df_field);
+            }
+            _ => {
+                continue;
+            }
+        }
+    }
+    Arc::new(ArrowSchema::new(df_fields))
 }
 
 #[async_trait]
@@ -266,49 +340,7 @@ impl TableProvider for QuickwitTableProvider {
     }
 
     fn schema(&self) -> SchemaRef {
-        let fields = self.schema.fields();
-        let mut df_fields = Vec::new();
-        for (_field, entry) in fields {
-            match &entry.field_type() {
-                FieldType::Bool(_) => {
-                    let df_field =
-                        arrow::datatypes::Field::new(entry.name(), DataType::Boolean, true);
-                    df_fields.push(df_field);
-                }
-                FieldType::U64(_) => {
-                    let df_field =
-                        arrow::datatypes::Field::new(entry.name(), DataType::UInt64, true);
-                    df_fields.push(df_field);
-                }
-                FieldType::I64(_) => {
-                    let df_field =
-                        arrow::datatypes::Field::new(entry.name(), DataType::Int64, true);
-                    df_fields.push(df_field);
-                }
-                FieldType::F64(_) => {
-                    let df_field =
-                        arrow::datatypes::Field::new(entry.name(), DataType::Float64, true);
-                    df_fields.push(df_field);
-                }
-                FieldType::Date(_) => {
-                    let df_field =
-                        arrow::datatypes::Field::new(entry.name(), DataType::Date64, true);
-                    df_fields.push(df_field);
-                }
-                // Text data default utf-8
-                FieldType::Str(opt) => {
-                    if !opt.is_stored() {
-                        continue;
-                    }
-                    let df_field = arrow::datatypes::Field::new(entry.name(), DataType::Utf8, true);
-                    df_fields.push(df_field);
-                }
-                _ => {
-                    continue;
-                }
-            }
-        }
-        Arc::new(ArrowSchema::new(df_fields))
+        schema_convert(&self.schema)
     }
 
     fn table_type(&self) -> TableType {
@@ -329,7 +361,7 @@ impl TableProvider for QuickwitTableProvider {
         match res {
             Ok(s) => Ok(Arc::new(QuickwitExecutionPlan {
                 schema: self.schema(),
-                recv: s,
+                recv: Mutex::new(Some(s)),
             })),
             Err(e) => Err(DataFusionError::Internal(format!(
                 "Scan quickwit table data failed, search_error:{:?}",

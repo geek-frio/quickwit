@@ -41,6 +41,10 @@ mod thread_pool;
 #[cfg(test)]
 mod tests;
 
+pub use sql::schema_convert;
+pub use sql::QuickwitExecutionPlan;
+pub use sql::QuickwitTableProvider;
+
 /// Refer to this as `crate::Result<T>`.
 pub type Result<T> = std::result::Result<T, SearchError>;
 

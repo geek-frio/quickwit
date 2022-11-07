@@ -20,17 +20,15 @@
 use std::collections::BTreeSet;
 
 use assert_json_diff::assert_json_include;
+use datafusion::prelude::SessionContext;
 use quickwit_doc_mapper::DefaultDocMapper;
 use quickwit_indexing::TestSandbox;
 use quickwit_proto::{LeafHit, SearchRequest, SortOrder};
 use serde_json::json;
-use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt, StreamMap};
+use tokio_stream::{wrappers::UnboundedReceiverStream, StreamMap};
 
 use super::*;
-use crate::{
-    search_stream::{leaf_search_sql_stream, root_search_sql_stream_leaf_hits},
-    single_node_search,
-};
+use crate::{search_stream::leaf_search_sql_stream, single_node_search};
 
 #[tokio::test]
 async fn test_datafusion_table_provider() -> anyhow::Result<()> {
@@ -80,10 +78,10 @@ async fn test_datafusion_table_provider() -> anyhow::Result<()> {
         SearchError::InternalError(format!("Failed to build doc mapper. Cause: {}", err))
     })?;
     let mut rx = leaf_search_sql_stream(
-        search_request,
+        search_request.clone(),
         index_storage.clone(),
         split_metadata.clone(),
-        doc_mapper,
+        doc_mapper.clone(),
     )
     .await;
 
@@ -91,7 +89,6 @@ async fn test_datafusion_table_provider() -> anyhow::Result<()> {
     while let Some(r) = rx.recv().await {
         let resp = r.unwrap();
         let partial_hits = resp.partial_hits;
-
         let result = fetch_docs(partial_hits, index_storage.clone(), &split_metadata)
             .await
             .unwrap();
@@ -114,6 +111,15 @@ async fn test_datafusion_table_provider() -> anyhow::Result<()> {
             stream_map.insert(1usize, stream);
             Ok(stream_map)
         });
+
+    let quick_table_provider =
+        QuickwitTableProvider::new(doc_mapper.schema(), Arc::new(mock_service), search_request);
+
+    let ctx = SessionContext::new();
+    let table = ctx.read_table(Arc::new(quick_table_provider)).unwrap();
+
+    let batch = table.collect().await.unwrap();
+    println!("len:{}", batch.len());
     Ok(())
 }
 
