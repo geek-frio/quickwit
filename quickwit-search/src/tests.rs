@@ -25,7 +25,7 @@ use quickwit_doc_mapper::DefaultDocMapper;
 use quickwit_indexing::TestSandbox;
 use quickwit_proto::{LeafHit, SearchRequest, SortOrder};
 use serde_json::json;
-use tokio_stream::{wrappers::UnboundedReceiverStream, StreamMap};
+use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt, StreamMap};
 
 use super::*;
 use crate::{search_stream::leaf_search_sql_stream, single_node_search};
@@ -95,6 +95,7 @@ async fn test_datafusion_table_provider() -> anyhow::Result<()> {
         let leaf_hits = result.hits;
         let _ = s.send(Ok(leaf_hits));
     }
+    drop(s);
     let stream: std::pin::Pin<
         Box<
             dyn futures::Stream<Item = std::result::Result<Vec<LeafHit>, SearchError>>
@@ -119,7 +120,7 @@ async fn test_datafusion_table_provider() -> anyhow::Result<()> {
     let table = ctx.read_table(Arc::new(quick_table_provider)).unwrap();
 
     let batch = table.collect().await.unwrap();
-    println!("len:{}", batch.len());
+    println!("batch is:{:?}", batch);
     Ok(())
 }
 

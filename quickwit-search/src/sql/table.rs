@@ -23,6 +23,7 @@ use pin_project::pin_project;
 use quickwit_proto::LeafHit;
 use quickwit_proto::SearchRequest;
 use serde_json::{Result as SerdeResult, Value};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -44,6 +45,7 @@ impl QuickwitTableProvider {
         search_service: Arc<dyn SearchService>,
         request: SearchRequest,
     ) -> QuickwitTableProvider {
+        println!("schema is:{:?}", schema);
         QuickwitTableProvider {
             schema,
             search_service,
@@ -104,9 +106,9 @@ impl Stream for QuickwitTableStream {
             Poll::Pending => Poll::Pending,
             Poll::Ready(hits) => {
                 if let Some(hits) = hits {
-                    let fields = schema.all_fields();
-                    let mut fields_map: HashMap<String, Vec<Box<dyn std::any::Any>>> =
-                        HashMap::new();
+                    let fields = schema.fields();
+                    let mut fields_map: BTreeMap<String, Vec<Box<dyn std::any::Any>>> =
+                        BTreeMap::new();
                     for v in fields.clone() {
                         fields_map.insert(v.name().clone(), Vec::new());
                     }
@@ -114,43 +116,63 @@ impl Stream for QuickwitTableStream {
                     for hit in hits.1.unwrap() {
                         let res: SerdeResult<Value> = serde_json::from_str(&hit.leaf_json);
                         if let Ok(mut row) = res {
-                            for field in &fields {
+                            for field in fields {
                                 let data_ary = fields_map.get_mut(field.name()).unwrap();
                                 match &mut row {
                                     Value::Object(row_map) => {
                                         let entry = row_map.remove_entry(field.name());
+
                                         match entry {
-                                            Some((_field_name, v)) => match &field.data_type() {
-                                                DataType::Boolean => {
-                                                    let val = v.as_bool().unwrap_or(false);
-                                                    data_ary.push(Box::new(val));
-                                                }
-                                                DataType::Date64 => {
-                                                    let val = v.as_i64().unwrap_or(0);
-                                                    data_ary.push(Box::new(val));
-                                                }
-                                                DataType::UInt64 => {
-                                                    let val = v.as_u64().unwrap_or(0);
-                                                    data_ary.push(Box::new(val));
-                                                }
-                                                DataType::Int64 => {
-                                                    let val = v.as_i64().unwrap_or(0);
-                                                    data_ary.push(Box::new(val));
-                                                }
-                                                DataType::Float64 => {
-                                                    let val = v.as_f64().unwrap_or(0f64);
-                                                    data_ary.push(Box::new(val));
-                                                }
-                                                DataType::Utf8 => {
-                                                    let val = v
-                                                        .as_str()
-                                                        .map(|s| s.to_string())
-                                                        .unwrap_or("".to_string());
-                                                    data_ary.push(Box::new(val));
-                                                }
-                                                _ => {
-                                                    unreachable!("Will not come here!")
-                                                }
+                                            Some((_field_name, v)) => match v {
+                                                Value::Array(mut v) => match &field.data_type() {
+                                                    DataType::Boolean => {
+                                                        let val = v
+                                                            .pop()
+                                                            .unwrap()
+                                                            .as_bool()
+                                                            .unwrap_or(false);
+                                                        data_ary.push(Box::new(val));
+                                                    }
+                                                    DataType::Date64 => {
+                                                        let val =
+                                                            v.pop().unwrap().as_i64().unwrap_or(0);
+                                                        data_ary.push(Box::new(val));
+                                                    }
+                                                    DataType::UInt64 => {
+                                                        let val =
+                                                            v.pop().unwrap().as_u64().unwrap_or(0);
+                                                        println!("val is:{}", val);
+                                                        data_ary.push(Box::new(val));
+                                                    }
+                                                    DataType::Int64 => {
+                                                        let val =
+                                                            v.pop().unwrap().as_i64().unwrap_or(0);
+                                                        println!("val is:{}", val);
+                                                        data_ary.push(Box::new(val));
+                                                    }
+                                                    DataType::Float64 => {
+                                                        let val = v
+                                                            .pop()
+                                                            .unwrap()
+                                                            .as_f64()
+                                                            .unwrap_or(0f64);
+                                                        data_ary.push(Box::new(val));
+                                                    }
+                                                    DataType::Utf8 => {
+                                                        let val = v
+                                                            .pop()
+                                                            .unwrap()
+                                                            .as_str()
+                                                            .map(|s| s.to_string())
+                                                            .unwrap_or("".to_string());
+                                                        println!("val is:{}", val);
+                                                        data_ary.push(Box::new(val));
+                                                    }
+                                                    _ => {
+                                                        unreachable!("Will not come here!")
+                                                    }
+                                                },
+                                                _ => unreachable!(),
                                             },
                                             None => {}
                                         }
@@ -214,8 +236,9 @@ impl Stream for QuickwitTableStream {
                     });
                     let recordbatch = RecordBatch::try_new(schema, final_column_ary);
                     return Poll::Ready(Some(recordbatch));
+                } else {
+                    Poll::Ready(None)
                 }
-                Poll::Pending
             }
         }
     }
@@ -223,6 +246,10 @@ impl Stream for QuickwitTableStream {
 
 impl RecordBatchStream for QuickwitTableStream {
     fn schema(&self) -> arrow::datatypes::SchemaRef {
+        println!(
+            "QuickwitTableStream's schema is called:{:?}",
+            self.schema.clone()
+        );
         self.schema.clone()
     }
 }
