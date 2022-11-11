@@ -14,6 +14,7 @@ use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
+use datafusion::physical_plan::project_schema;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
 use datafusion::physical_plan::RecordBatchStream;
@@ -23,8 +24,8 @@ use pin_project::pin_project;
 use quickwit_proto::LeafHit;
 use quickwit_proto::SearchRequest;
 use serde_json::{Result as SerdeResult, Value};
+use std::any::Any;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -45,7 +46,6 @@ impl QuickwitTableProvider {
         search_service: Arc<dyn SearchService>,
         request: SearchRequest,
     ) -> QuickwitTableProvider {
-        println!("schema is:{:?}", schema);
         QuickwitTableProvider {
             schema,
             search_service,
@@ -71,6 +71,7 @@ pub struct QuickwitExecutionPlan {
             >,
         >,
     >,
+    projection: Option<Vec<usize>>,
 }
 
 #[pin_project]
@@ -109,81 +110,59 @@ impl Stream for QuickwitTableStream {
                     let fields = schema.fields();
                     let mut fields_map: BTreeMap<String, Vec<Box<dyn std::any::Any>>> =
                         BTreeMap::new();
-                    for v in fields.clone() {
-                        fields_map.insert(v.name().clone(), Vec::new());
+
+                    for field in fields.into_iter() {
+                        fields_map.insert(field.name().clone(), Vec::new());
                     }
 
-                    for hit in hits.1.unwrap() {
-                        let res: SerdeResult<Value> = serde_json::from_str(&hit.leaf_json);
-                        if let Ok(mut row) = res {
-                            for field in fields {
-                                let data_ary = fields_map.get_mut(field.name()).unwrap();
-                                match &mut row {
-                                    Value::Object(row_map) => {
-                                        let entry = row_map.remove_entry(field.name());
-
-                                        match entry {
-                                            Some((_field_name, v)) => match v {
-                                                Value::Array(mut v) => match &field.data_type() {
-                                                    DataType::Boolean => {
-                                                        let val = v
-                                                            .pop()
-                                                            .unwrap()
-                                                            .as_bool()
-                                                            .unwrap_or(false);
-                                                        data_ary.push(Box::new(val));
+                    match hits.1 {
+                        Ok(hits) => {
+                            hits.into_iter()
+                                .map(|hit| {
+                                    let res: SerdeResult<Value> =
+                                        serde_json::from_str(&hit.leaf_json);
+                                    res
+                                })
+                                .filter(|r| r.is_ok())
+                                .map(|r| r.unwrap())
+                                .for_each(|row_obj| {
+                                    if let Value::Object(mut row_obj) = row_obj {
+                                        fields.iter().for_each(|field| {
+                                            let data_ary = fields_map.get_mut(field.name());
+                                            if let Some(v) = data_ary {
+                                                let val = row_obj.remove_entry(field.name());
+                                                if let Some((_field_name, val)) = val {
+                                                    if !val.is_array() {
+                                                        return;
                                                     }
-                                                    DataType::Date64 => {
-                                                        let val =
-                                                            v.pop().unwrap().as_i64().unwrap_or(0);
-                                                        data_ary.push(Box::new(val));
+                                                    let ary = val.as_array().unwrap();
+                                                    if ary.len() != 1 {
+                                                        return;
                                                     }
-                                                    DataType::UInt64 => {
-                                                        let val =
-                                                            v.pop().unwrap().as_u64().unwrap_or(0);
-                                                        println!("val is:{}", val);
-                                                        data_ary.push(Box::new(val));
+                                                    if let Value::Array(mut real_val) = val {
+                                                        if real_val.len() != 1 {
+                                                            return;
+                                                        }
+                                                        if let Some(real_val) = real_val.pop() {
+                                                            v.push(Box::new(real_val));
+                                                        }
                                                     }
-                                                    DataType::Int64 => {
-                                                        let val =
-                                                            v.pop().unwrap().as_i64().unwrap_or(0);
-                                                        println!("val is:{}", val);
-                                                        data_ary.push(Box::new(val));
-                                                    }
-                                                    DataType::Float64 => {
-                                                        let val = v
-                                                            .pop()
-                                                            .unwrap()
-                                                            .as_f64()
-                                                            .unwrap_or(0f64);
-                                                        data_ary.push(Box::new(val));
-                                                    }
-                                                    DataType::Utf8 => {
-                                                        let val = v
-                                                            .pop()
-                                                            .unwrap()
-                                                            .as_str()
-                                                            .map(|s| s.to_string())
-                                                            .unwrap_or("".to_string());
-                                                        println!("val is:{}", val);
-                                                        data_ary.push(Box::new(val));
-                                                    }
-                                                    _ => {
-                                                        unreachable!("Will not come here!")
-                                                    }
-                                                },
-                                                _ => unreachable!(),
-                                            },
-                                            None => {}
-                                        }
+                                                }
+                                            }
+                                        });
                                     }
-                                    _ => {
-                                        continue;
-                                    }
-                                }
-                            }
+                                });
+                        }
+                        Err(e) => {
+                            return Poll::Ready(Some(ArrowResult::Err(
+                                arrow::error::ArrowError::ComputeError(format!(
+                                    "Search quickwit error:{:?}",
+                                    e
+                                )),
+                            )));
                         }
                     }
+
                     let mut final_column_ary: Vec<Arc<dyn arrow::array::Array + 'static>> =
                         Vec::new();
                     fields_map.into_iter().for_each(|(field_name, v)| {
@@ -244,6 +223,8 @@ impl Stream for QuickwitTableStream {
     }
 }
 
+fn row_to_column_convert() {}
+
 impl RecordBatchStream for QuickwitTableStream {
     fn schema(&self) -> arrow::datatypes::SchemaRef {
         println!(
@@ -268,10 +249,10 @@ impl ExecutionPlan for QuickwitExecutionPlan {
     }
 
     fn schema(&self) -> arrow::datatypes::SchemaRef {
-        self.schema.clone()
+        project_schema(&self.schema, self.projection.as_ref()).unwrap()
     }
 
-    // TODO: 暂时不明确partition的作用, 暂时返回1
+    // Use datafusion default parallelism
     fn output_partitioning(&self) -> Partitioning {
         Partitioning::RoundRobinBatch(1)
     }
@@ -300,7 +281,6 @@ impl ExecutionPlan for QuickwitExecutionPlan {
         if guard.is_some() {
             let stream_map = guard.take().unwrap();
             let schema = self.schema.clone();
-
             let stream = QuickwitTableStream {
                 schema,
                 recv: stream_map,
@@ -313,7 +293,6 @@ impl ExecutionPlan for QuickwitExecutionPlan {
         }
     }
 
-    // TODO: 暂不明确作用，先置为空
     fn statistics(&self) -> datafusion::physical_plan::Statistics {
         Statistics::default()
     }
@@ -377,10 +356,11 @@ impl TableProvider for QuickwitTableProvider {
     async fn scan(
         &self,
         _state: &SessionState,
-        _: &Option<Vec<usize>>,
+        proj: &Option<Vec<usize>>,
         _filters: &[Expr],
         _: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        println!("Scan is called, projection is proj:{:?}", proj);
         let res = self
             .search_service
             .root_search_sql_stream_leaf_hits(self.request.clone())
@@ -389,6 +369,7 @@ impl TableProvider for QuickwitTableProvider {
             Ok(s) => Ok(Arc::new(QuickwitExecutionPlan {
                 schema: self.schema(),
                 recv: Mutex::new(Some(s)),
+                projection: proj.clone(),
             })),
             Err(e) => Err(DataFusionError::Internal(format!(
                 "Scan quickwit table data failed, search_error:{:?}",

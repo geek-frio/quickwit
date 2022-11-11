@@ -3482,6 +3482,7 @@ dependencies = [
  "arrow",
  "assert-json-diff",
  "async-trait",
+ "backtrace",
  "base64",
  "bytes",
  "chitchat",

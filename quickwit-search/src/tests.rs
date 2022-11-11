@@ -17,10 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, f32::consts::E};
 
 use assert_json_diff::assert_json_include;
-use datafusion::prelude::SessionContext;
+use datafusion::{prelude::SessionContext, sql::TableReference};
 use quickwit_doc_mapper::DefaultDocMapper;
 use quickwit_indexing::TestSandbox;
 use quickwit_proto::{LeafHit, SearchRequest, SortOrder};
@@ -45,7 +45,7 @@ async fn test_datafusion_table_provider() -> anyhow::Result<()> {
     // Mock datas
     let test_sandbox = TestSandbox::create(index_id, doc_mapping_yaml, "{}", &["body"]).await?;
     let mut docs = vec![];
-    for i in 0..1000 {
+    for i in 0..200 {
         let body = format!("body {}", i + 1000);
         docs.push(json!({"body": body, "id": i + 10000, "val": i*2 + 100}));
     }
@@ -117,10 +117,23 @@ async fn test_datafusion_table_provider() -> anyhow::Result<()> {
         QuickwitTableProvider::new(doc_mapper.schema(), Arc::new(mock_service), search_request);
 
     let ctx = SessionContext::new();
-    let table = ctx.read_table(Arc::new(quick_table_provider)).unwrap();
+    // let table = ctx.read_table(Arc::new(quick_table_provider)).unwrap();
 
-    let batch = table.collect().await.unwrap();
-    println!("batch is:{:?}", batch);
+    ctx.register_table(
+        TableReference::Bare { table: "abc" },
+        Arc::new(quick_table_provider),
+    )
+    .unwrap();
+
+    let batch = ctx
+        .sql("select body from (select * from abc) a")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let pretty_results = arrow::util::pretty::pretty_format_batches(&batch)?.to_string();
+    println!("batch is:{}", pretty_results);
     Ok(())
 }
 
